@@ -29,7 +29,7 @@ wayland-client = { version = "0.31", features = ["system"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 rustix = { version = "1", features = ["event"] }
 gstreamer = { version = "0.24", optional = true }
-gstreamer-video = { version = "0.24", optional = true }
+gstreamer-video = { version = "0.25", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
