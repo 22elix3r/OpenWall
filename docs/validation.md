@@ -23,7 +23,10 @@ visually inspected. The Qt GUI was also started with the offscreen platform.
 The original Aurora scene rendered to PNG and was presented as a layer-shell background.
 A generated two-second VP9/WebM test video ran for seven seconds and selected
 `nvvp9dec`. Decoder choice does not establish that end-to-end presentation is zero-copy.
-Worker diagnostics include first-buffer sink caps and DMA-BUF status for further checks.
+On this particular decoder/sink path the first sink buffer was RGBx system memory
+(`DMA-BUF=false`). Hardware decoding therefore does not eliminate the frame-transfer
+cost. Efficient GPU-resident video presentation remains an open M0 gate. Worker
+diagnostics expose first-buffer sink caps and DMA-BUF status for further checks.
 
 A three-second idle sample of the static scene recorded 0.0% of one CPU core and
 127.3 MiB RSS in the development build. SIGINT cleanup passed, including Hyprland's
@@ -33,6 +36,16 @@ budget or video performance.
 Run `python3 scripts/smoke_wayland.py` in a Hyprland session to test owned surface
 creation, SIGINT cleanup, and an idle CPU sample. It refuses to interfere with an already
 running OpenWall surface. The script changes no desktop settings.
+
+For the native video regression, generate an original short fixture and opt in:
+
+```sh
+ffmpeg -f lavfi -i testsrc2=size=640x360:rate=30 -t 2 -an -c:v libvpx-vp9 -b:v 400k /tmp/openwall-loop.webm
+python3 scripts/smoke_wayland.py --video-fixture /tmp/openwall-loop.webm
+```
+
+This requires at least two loops, a buffer at the native sink, clean surface shutdown,
+and no scene-GPU initialization in the native video worker.
 
 ## Required before support claims
 

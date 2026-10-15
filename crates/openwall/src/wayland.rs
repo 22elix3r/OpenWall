@@ -22,7 +22,10 @@ use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use serde::Serialize;
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop,
-    protocol::{wl_compositor, wl_output, wl_region, wl_registry, wl_surface},
+    protocol::{
+        wl_buffer, wl_compositor, wl_output, wl_region, wl_registry, wl_shm, wl_shm_pool,
+        wl_surface,
+    },
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
@@ -40,6 +43,7 @@ pub struct DisplayInfo {
 struct Output {
     #[cfg(feature = "video")]
     video: Option<crate::video::Player>,
+    black: Option<wl_buffer::WlBuffer>,
     // Drop GPU presentation before destroying the native wl_surface.
     surface: Option<wgpu::Surface<'static>>,
     painter: Option<Painter>,
@@ -56,6 +60,9 @@ impl Drop for Output {
     fn drop(&mut self) {
         #[cfg(feature = "video")]
         self.video.take();
+        if let Some(buffer) = self.black.take() {
+            buffer.destroy();
+        }
         self.surface.take();
         self.painter.take();
         if let Some(layer) = self.layer.take() {
@@ -71,6 +78,7 @@ struct State {
     outputs: BTreeMap<u32, Output>,
     compositor: Option<wl_compositor::WlCompositor>,
     shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
+    shm: Option<wl_shm::WlShm>,
 }
 
 fn connect() -> Result<(Connection, wayland_client::EventQueue<State>, State)> {
@@ -81,6 +89,7 @@ fn connect() -> Result<(Connection, wayland_client::EventQueue<State>, State)> {
         outputs: BTreeMap::new(),
         compositor: None,
         shell: None,
+        shm: None,
     };
     queue.roundtrip(&mut state)?;
     queue.roundtrip(&mut state)?;
@@ -136,7 +145,7 @@ fn run_content(
     {
         bail!("display not found: {name}");
     }
-    let instance = Gpu::instance();
+    let instance = video_path.is_none().then(Gpu::instance);
     let mut gpu: Option<Gpu> = None;
     let (mut wake_read, wake_write) = UnixStream::pair()?;
     wake_read.set_nonblocking(true)?;
@@ -159,6 +168,9 @@ fn run_content(
         if stopped.load(Ordering::Relaxed) || deadline.is_some_and(|x| Instant::now() >= x) {
             break;
         }
+        let shm = state.shm.clone();
+        #[cfg(not(feature = "video"))]
+        let _ = &shm;
         for (id, item) in &mut state.outputs {
             #[cfg(feature = "video")]
             if let Some(video) = &item.video {
@@ -199,6 +211,39 @@ fn run_content(
                 && let Some((width, height)) = item.configured
             {
                 let native = item.native.as_ref().context("missing Wayland surface")?;
+                let scale = item.info.scale.max(1) as u32;
+                native.set_buffer_scale(scale as i32);
+                #[cfg(feature = "video")]
+                if let Some(path) = &video_path {
+                    let shm = shm
+                        .as_ref()
+                        .context("compositor has no shared-memory buffers")?;
+                    let buffer = black_buffer(shm, &queue.handle(), width, height, scale)?;
+                    native.attach(Some(&buffer), 0, 0);
+                    native.damage(0, 0, width as i32, height as i32);
+                    native.commit();
+                    item.video.take();
+                    if let Some(previous) = item.black.replace(buffer) {
+                        previous.destroy();
+                    }
+                    item.video = Some(crate::video::Player::new(
+                        path,
+                        Some((
+                            conn.backend().display_ptr() as usize,
+                            native.id().as_ptr() as usize,
+                            width,
+                            height,
+                        )),
+                        Some(wake_write.clone()),
+                    )?);
+                    item.dirty = false;
+                    eprintln!(
+                        "Native video attached on {} (no scene GPU initialized)",
+                        item.info.name
+                    );
+                    continue;
+                }
+                let instance = instance.as_ref().context("scene GPU instance is missing")?;
                 if item.surface.is_none() {
                     let display = WaylandDisplayHandle::new(
                         NonNull::new(conn.backend().display_ptr().cast())
@@ -226,8 +271,6 @@ fn run_content(
                 }
                 let gpu = gpu.as_ref().context("GPU not initialized")?;
                 let surface = item.surface.as_ref().context("surface not initialized")?;
-                let scale = item.info.scale.max(1) as u32;
-                native.set_buffer_scale(scale as i32);
                 let config = gpu.configure(surface, width * scale, height * scale)?;
                 if item
                     .painter
@@ -249,21 +292,6 @@ fn run_content(
                     .as_ref()
                     .context("painter was not initialized")?;
                 item.dirty = !painter.present(gpu, surface)?;
-                #[cfg(feature = "video")]
-                if let Some(path) = &video_path {
-                    // Recreate the sink only on output geometry changes, never per frame.
-                    item.video.take();
-                    item.video = Some(crate::video::Player::new(
-                        path,
-                        Some((
-                            conn.backend().display_ptr() as usize,
-                            native.id().as_ptr() as usize,
-                            width,
-                            height,
-                        )),
-                        Some(wake_write.clone()),
-                    )?);
-                }
                 eprintln!(
                     "Wallpaper presented on {} ({}×{}, scale {})",
                     item.info.name, config.width, config.height, scale
@@ -320,6 +348,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                 "zwlr_layer_shell_v1" => {
                     state.shell = Some(registry.bind(name, version.min(4), qh, ()))
                 }
+                "wl_shm" => state.shm = Some(registry.bind(name, version.min(1), qh, ())),
                 "wl_output" => {
                     let proxy = registry.bind(name, version.min(4), qh, name);
                     state.outputs.insert(
@@ -335,6 +364,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                             painter: None,
                             layer: None,
                             native: None,
+                            black: None,
                             configured: None,
                             dirty: true,
                             closed: false,
@@ -434,3 +464,40 @@ delegate_noop!(State: ignore wl_compositor::WlCompositor);
 delegate_noop!(State: ignore wl_region::WlRegion);
 delegate_noop!(State: ignore wl_surface::WlSurface);
 delegate_noop!(State: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
+delegate_noop!(State: ignore wl_shm::WlShm);
+delegate_noop!(State: ignore wl_shm_pool::WlShmPool);
+delegate_noop!(State: ignore wl_buffer::WlBuffer);
+
+#[cfg(feature = "video")]
+fn black_buffer(
+    shm: &wl_shm::WlShm,
+    qh: &QueueHandle<State>,
+    width: u32,
+    height: u32,
+    scale: u32,
+) -> Result<wl_buffer::WlBuffer> {
+    use std::os::fd::AsFd;
+    let width = width.checked_mul(scale).context("output width overflow")?;
+    let height = height
+        .checked_mul(scale)
+        .context("output height overflow")?;
+    let bytes = u64::from(width) * u64::from(height) * 4;
+    anyhow::ensure!(
+        width <= 16384 && height <= 16384 && bytes <= 256 * 1024 * 1024,
+        "output exceeds presentation buffer limits"
+    );
+    let mut file = tempfile::tempfile()?;
+    file.write_all(&0xff000000u32.to_ne_bytes().repeat((bytes / 4) as usize))?;
+    let pool = shm.create_pool(file.as_fd(), bytes as i32, qh, ());
+    let buffer = pool.create_buffer(
+        0,
+        width as i32,
+        height as i32,
+        (width * 4) as i32,
+        wl_shm::Format::Argb8888,
+        qh,
+        (),
+    );
+    pool.destroy();
+    Ok(buffer)
+}

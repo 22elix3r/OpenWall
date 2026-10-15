@@ -23,7 +23,8 @@ uploaded to the GPU and rendered only on presentation/configuration changes. Lin
 Wayland surfaces are background-layer, non-focusable and click-through. Hot-plug removes
 GPU presentation before native surfaces. The C pointer boundary documents connection and
 surface lifetime requirements. Linux video uses GStreamer-owned Wayland subsurfaces;
-the parent surface has a static black GPU buffer. macOS uses AppKit and AVFoundation.
+the parent surface has a static shared-memory black buffer, so video workers never
+initialize a second scene GPU/device. macOS uses AppKit and AVFoundation.
 
 `openwall-ui` exposes Rust objects to QML through CXX-Qt. Content inspection runs in a
 separate process on a background thread; the GUI never evaluates wallpaper scripts or

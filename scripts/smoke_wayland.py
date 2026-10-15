@@ -26,6 +26,7 @@ def ticks(pid):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/openwall")
+    parser.add_argument("--video-fixture", type=Path, help="optional original looping video no longer than two seconds")
     args = parser.parse_args()
     if surfaces():
         raise SystemExit("An OpenWall surface already exists; stop it before running this test.")
@@ -58,6 +59,18 @@ def main():
         if child.poll() is None:
             child.kill()
             child.wait()
+    if args.video_fixture:
+        video = subprocess.run([str(args.binary), "apply", str(args.video_fixture), "--seconds", "7"], capture_output=True, timeout=15)
+        diagnostics = video.stderr.decode(errors="replace")
+        assert video.returncode == 0, diagnostics
+        assert "no scene GPU initialized" in diagnostics, diagnostics
+        assert "First video buffer:" in diagnostics, "native sink never received video"
+        assert diagnostics.count("Video loop restarted") >= 2, diagnostics
+        until = time.monotonic() + 3
+        while surfaces() and time.monotonic() < until:
+            time.sleep(.05)
+        assert not surfaces(), "video surfaces survived worker shutdown"
+        print(json.dumps({"native_video": "passed", "loops": diagnostics.count("Video loop restarted"), "scene_gpu_initialized": False, "diagnostics": diagnostics}, indent=2))
 
 
 if __name__ == "__main__":
