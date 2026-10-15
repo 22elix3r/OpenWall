@@ -73,3 +73,58 @@ fn gpu_render_matches_original_reference_art() {
         "mean per-channel error {mean} exceeds tolerance"
     );
 }
+
+#[test]
+fn gpu_applies_position_rotation_and_linear_alpha_blending() {
+    if std::env::var_os("OPENWALL_TEST_GPU").is_none() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let write = |name: &str, value: serde_json::Value| {
+        std::fs::write(root.path().join(name), serde_json::to_vec(&value).unwrap()).unwrap();
+    };
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]))
+        .save(root.path().join("red.png"))
+        .unwrap();
+    write(
+        "project.json",
+        serde_json::json!({"title":"Transform conformance", "type":"scene", "file":"scene.json"}),
+    );
+    write(
+        "scene.json",
+        serde_json::json!({"general":{"clearcolor":"0 0 0", "orthogonalprojection":{"width":32,"height":24}}, "objects":[{"image":"model.json","origin":"8 8 0","angles":"0 0 90","alpha":0.5}]}),
+    );
+    write(
+        "model.json",
+        serde_json::json!({"width":8,"height":4,"material":"material.json"}),
+    );
+    write(
+        "material.json",
+        serde_json::json!({"shader":"genericimage","textures":["red.png"]}),
+    );
+    let output = root.path().join("render.png");
+    let result = Command::new(env!("CARGO_BIN_EXE_openwall"))
+        .arg("render")
+        .arg(root.path().join("project.json"))
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let image = image::open(output).unwrap().to_rgba8();
+    assert_eq!(
+        image.get_pixel(11, 16).0,
+        [0, 0, 0, 255],
+        "rotated narrow edge is misplaced"
+    );
+    let color = image.get_pixel(8, 13).0;
+    assert!(
+        (187..=189).contains(&color[0]),
+        "alpha blending must happen in linear light: {color:?}"
+    );
+    assert_eq!([color[1], color[2], color[3]], [0, 0, 255]);
+}

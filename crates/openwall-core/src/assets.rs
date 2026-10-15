@@ -255,6 +255,23 @@ mod tests {
     }
 
     #[test]
+    fn tex_image_count_is_bounded_before_upstream_allocation() {
+        let root = tempfile::tempdir().unwrap();
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/checker.tex");
+        let mut bytes = std::fs::read(sample).unwrap();
+        bytes[55..59].copy_from_slice(&u32::MAX.to_le_bytes());
+        std::fs::write(root.path().join("bomb.tex"), bytes).unwrap();
+        assert!(
+            Assets::open(root.path())
+                .unwrap()
+                .image("bomb.tex")
+                .unwrap_err()
+                .to_string()
+                .contains("single-image")
+        );
+    }
+
+    #[test]
     fn package_cannot_contain_host_paths() {
         let root = tempfile::tempdir().unwrap();
         let name = b"../outside";

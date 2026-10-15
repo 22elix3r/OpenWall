@@ -7,6 +7,7 @@
 - Unsupported code/effects and non-finite/malformed transforms.
 - CLI process success/failure contracts and JSON reports.
 - Opt-in Vulkan/Metal output comparison with original reference artwork.
+- GPU checks for layer position, rotation, and alpha blending in linear light.
 - Qt QML startup via `openwall-ui --check` with nonzero exit on root creation failure.
 - Linux/macOS CI build, tests and Clippy. Hosted software Vulkan is correctness evidence only.
 

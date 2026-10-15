@@ -117,12 +117,8 @@ impl Scene {
 
     fn from_document(assets: &Assets, document: &Value, title: String) -> Result<Self> {
         let general = &document["general"];
-        let width = general["orthogonalprojection"]["width"]
-            .as_u64()
-            .unwrap_or(1920);
-        let height = general["orthogonalprojection"]["height"]
-            .as_u64()
-            .unwrap_or(1080);
+        let width = dimension(&general["orthogonalprojection"]["width"], 1920)?;
+        let height = dimension(&general["orthogonalprojection"]["height"], 1080)?;
         ensure!(
             width > 0 && height > 0 && width <= 16384 && height <= 16384,
             "scene dimensions must be between 1 and 16384"
@@ -146,6 +142,18 @@ impl Scene {
             .context("scene must contain an objects array")?;
         ensure!(objects.len() <= 1024, "scene exceeds 1024 layers");
         collect_unsupported(document, "scene", &mut scene.report.unsupported);
+        unknown_fields(
+            document,
+            &["general", "objects"],
+            "scene",
+            &mut scene.report.unsupported,
+        );
+        unknown_fields(
+            &general["orthogonalprojection"],
+            &["width", "height"],
+            "projection",
+            &mut scene.report.unsupported,
+        );
         unknown_fields(
             general,
             &["clearcolor", "orthogonalprojection", "parallax"],
@@ -287,6 +295,15 @@ impl Scene {
     }
 }
 
+fn dimension(value: &Value, fallback: u64) -> Result<u64> {
+    if value.is_null() {
+        return Ok(fallback);
+    }
+    value
+        .as_u64()
+        .context("scene dimensions must be positive integers")
+}
+
 fn unknown_fields(value: &Value, supported: &[&str], path: &str, out: &mut Vec<String>) {
     if let Some(object) = value.as_object() {
         for key in object.keys() {
@@ -401,5 +418,29 @@ mod tests {
         for v in ["NaN 0 0", "inf 0 0", "1 2", "1 2 3 4"] {
             assert!(vector(&Value::from(v), [0.0; 3]).is_err());
         }
+    }
+
+    #[test]
+    fn malformed_dimensions_are_not_silently_defaulted() {
+        for value in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("1920"),
+        ] {
+            assert!(dimension(&value, 1920).is_err());
+        }
+        assert_eq!(dimension(&Value::Null, 1920).unwrap(), 1920);
+    }
+
+    #[test]
+    fn root_scene_features_are_reported() {
+        let mut report = Vec::new();
+        unknown_fields(
+            &serde_json::json!({"general":{}, "objects":[], "timeline":{}}),
+            &["general", "objects"],
+            "scene",
+            &mut report,
+        );
+        assert_eq!(report, ["scene.timeline: not implemented"]);
     }
 }

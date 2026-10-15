@@ -237,10 +237,30 @@ impl ffi::Backend {
                 self.as_mut().message("Wallpaper stopped");
             }
         }
+        let mut preview_error = None;
         self.as_mut()
             .rust_mut()
             .previews
-            .retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+            .retain_mut(|child| match child.try_wait() {
+                Ok(None) => true,
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        preview_error = Some(child.diagnostic());
+                    }
+                    false
+                }
+                Err(error) => {
+                    preview_error = Some(error.to_string());
+                    false
+                }
+            });
+        if let Some(error) = preview_error {
+            self.message(if error.is_empty() {
+                "Preview could not be opened.".to_owned()
+            } else {
+                error
+            });
+        }
     }
 
     pub fn discover_outputs(self: Pin<&mut Self>) {
