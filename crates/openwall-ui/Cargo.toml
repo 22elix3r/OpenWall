@@ -15,4 +15,4 @@ url = "2"
 serde_json.workspace = true
 
 [build-dependencies]
-cxx-qt-build = "0.8"
+cxx-qt-build = "0.10"
