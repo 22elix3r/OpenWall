@@ -23,21 +23,26 @@ pub struct Assets {
 
 impl Assets {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
-        let root = root
-            .as_ref()
-            .canonicalize()
-            .context("cannot open wallpaper directory")?;
-        ensure!(root.is_dir(), "wallpaper root must be a directory");
-        let mut assets = Self {
-            root,
-            packed: BTreeMap::new(),
-        };
+        let mut assets = Self::loose(root)?;
         let package = assets.root.join("scene.pkg");
         if package.exists() {
             let bytes = assets.read_file("scene.pkg", MAX_PACKAGE_BYTES)?;
             assets.load_package(&bytes)?;
         }
         Ok(assets)
+    }
+
+    /// Standalone image access must not discover unrelated neighboring packages.
+    pub fn loose(root: impl AsRef<Path>) -> Result<Self> {
+        let root = root
+            .as_ref()
+            .canonicalize()
+            .context("cannot open wallpaper directory")?;
+        ensure!(root.is_dir(), "wallpaper root must be a directory");
+        Ok(Self {
+            root,
+            packed: BTreeMap::new(),
+        })
     }
 
     fn load_package(&mut self, bytes: &[u8]) -> Result<()> {

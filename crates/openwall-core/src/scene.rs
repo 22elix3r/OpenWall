@@ -57,10 +57,10 @@ impl Scene {
                     .into_owned(),
             )
         };
-        let assets = Assets::open(root)?;
         if !main.ends_with(".json") {
-            return Self::from_image(&assets, &main);
+            return Self::from_image(&Assets::loose(root)?, &main);
         }
+        let assets = Assets::open(root)?;
         let project = assets.json(&main)?;
         let title = project
             .get("title")
@@ -381,6 +381,19 @@ mod tests {
         scene.require_supported().unwrap();
         assert_eq!((scene.report.width, scene.report.height), (1280, 720));
         assert_eq!(scene.layers.len(), 3);
+    }
+
+    #[test]
+    fn standalone_images_ignore_unrelated_neighboring_packages() {
+        let root = tempfile::tempdir().unwrap();
+        let image = root.path().join("image.png");
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]))
+            .save(&image)
+            .unwrap();
+        std::fs::write(root.path().join("scene.pkg"), b"unrelated invalid package").unwrap();
+        let scene = Scene::load(image).unwrap();
+        assert_eq!(scene.layers[0].pixels.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(scene.report.packed_entries, 0);
     }
 
     #[test]
