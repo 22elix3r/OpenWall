@@ -1,6 +1,7 @@
 name: CI
 on:
   push:
+    branches: [main]
   pull_request:
 permissions:
   contents: read
@@ -45,7 +46,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           OPENWALL_TEST_GPU: '1'
-        run: cargo test --locked -p openwall --test cli gpu_render_matches_original_reference_art -- --nocapture
+        run: cargo test --locked -p openwall --test cli gpu_ -- --nocapture
       - name: GUI startup
         env:
           QT_QPA_PLATFORM: offscreen
