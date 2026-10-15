@@ -19,7 +19,7 @@ image.workspace = true
 clap = { version = "4", features = ["derive"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl"] }
 winit = "0.30"
-pollster = "0.4"
+pollster = "1.0"
 bytemuck = { version = "1", features = ["derive"] }
 ctrlc = "3"
 raw-window-handle = "0.6"
