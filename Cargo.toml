@@ -1,0 +1,24 @@
+[workspace]
+members = ["crates/openwall-core", "crates/openwall", "crates/openwall-ui"]
+default-members = ["crates/openwall-core", "crates/openwall"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/22elix3r/OpenWall"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+kirie-formats = { git = "https://github.com/UnhingedSoftware/kirie", rev = "e6fa67a4860fc512c18373cec02a67579bcb4873" }
+openwall-core = { path = "crates/openwall-core" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

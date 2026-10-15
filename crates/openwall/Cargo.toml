@@ -1,0 +1,43 @@
+[package]
+name = "openwall"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Open-source desktop wallpapers and Wallpaper Engine compatibility tools"
+
+[features]
+default = ["video"]
+video = ["dep:gstreamer", "dep:gstreamer-video"]
+
+[dependencies]
+openwall-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image.workspace = true
+clap = { version = "4", features = ["derive"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl"] }
+winit = "0.30"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+ctrlc = "3"
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+rustix = { version = "1", features = ["event"] }
+gstreamer = { version = "0.24", optional = true }
+gstreamer-video = { version = "0.24", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSView", "NSScreen"] }
+objc2-core-graphics = { version = "0.3", features = ["CGWindowLevel"] }
+objc2-foundation = "0.3"
+objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "objc2-core-media", "objc2-quartz-core", "AVPlayer", "AVPlayerItem", "AVPlayerLayer", "AVPlayerLooper", "AVAnimation", "AVError"] }
+
+[dev-dependencies]
+tempfile = "3"

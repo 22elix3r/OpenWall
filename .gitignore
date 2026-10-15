@@ -1,0 +1,5 @@
+/target/
+/.local/
+*.log
+.DS_Store
+.qmlls.ini

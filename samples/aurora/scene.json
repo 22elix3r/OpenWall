@@ -1,0 +1,35 @@
+{
+  "general": {
+    "clearcolor": "0.025 0.035 0.06",
+    "orthogonalprojection": {
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "objects": [
+    {
+      "id": 1,
+      "name": "sky",
+      "image": "models/sky.json",
+      "origin": "640 360 0",
+      "scale": "1 1 1",
+      "angles": "0 0 0"
+    },
+    {
+      "id": 2,
+      "name": "moon",
+      "image": "models/moon.json",
+      "origin": "640 360 0",
+      "scale": "1 1 1",
+      "angles": "0 0 0"
+    },
+    {
+      "id": 3,
+      "name": "ridge",
+      "image": "models/ridge.json",
+      "origin": "640 360 0",
+      "scale": "1 1 1",
+      "angles": "0 0 0"
+    }
+  ]
+}
