@@ -132,6 +132,17 @@ fn run_content(
     duration: Option<Duration>,
     video_path: Option<PathBuf>,
 ) -> Result<()> {
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    let shell_owned = desktop.split([':', ';']).any(|name| {
+        matches!(
+            name.trim().to_ascii_lowercase().as_str(),
+            "gnome" | "gnome-classic" | "kde" | "plasma"
+        )
+    });
+    anyhow::ensure!(
+        !shell_owned,
+        "{desktop} requires a dedicated desktop integration, which is not implemented yet; creating an invisible background surface would not apply the wallpaper"
+    );
     #[cfg(not(feature = "video"))]
     let _ = &video_path;
     let (conn, mut queue, mut state) = connect()?;

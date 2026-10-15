@@ -36,6 +36,22 @@ fn missing_asset_fails_cleanly() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("does not exist"));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn plasma_requires_its_adapter_instead_of_claiming_invisible_success() {
+    let result = Command::new(env!("CARGO_BIN_EXE_openwall"))
+        .env("XDG_CURRENT_DESKTOP", "KDE")
+        .env_remove("WAYLAND_DISPLAY")
+        .arg("apply")
+        .arg(sample("aurora/project.json"))
+        .arg("--seconds")
+        .arg("0")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("dedicated desktop integration"));
+}
+
 #[test]
 fn gpu_render_matches_original_reference_art() {
     if std::env::var_os("OPENWALL_TEST_GPU").is_none() {

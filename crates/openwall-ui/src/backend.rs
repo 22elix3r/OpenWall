@@ -66,7 +66,11 @@ impl Default for BackendRust {
             status: QString::from("Ready"),
             details: QString::from("1280 × 720  ·  Original scene  ·  CC0"),
             preview_url: QString::from("qrc:/openwall/aurora.png"),
-            outputs_json: QString::from("[\"All displays\"]"),
+            outputs_json: QString::from(if cfg!(target_os = "macos") {
+                "[\"Default display\"]"
+            } else {
+                "[\"All displays\"]"
+            }),
             busy: false,
             active: false,
             child: None,
@@ -266,7 +270,14 @@ impl ffi::Backend {
     pub fn discover_outputs(self: Pin<&mut Self>) {
         let qt = self.qt_thread();
         std::thread::spawn(move || {
-            let mut outputs = vec!["All displays".to_owned()];
+            let mut outputs = vec![
+                if cfg!(target_os = "macos") {
+                    "Default display"
+                } else {
+                    "All displays"
+                }
+                .to_owned(),
+            ];
             if let Ok(result) = Command::new(player()).arg("outputs").output()
                 && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&result.stdout)
                 && let Some(displays) = value["outputs"].as_array()
