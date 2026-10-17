@@ -48,6 +48,44 @@ python3 scripts/smoke_wayland.py --video-fixture /tmp/openwall-loop.webm
 This requires at least two loops, a buffer at the native sink, clean surface shutdown,
 and no scene-GPU initialization in the native video worker.
 
+## Isolated compositor regression: 2026-10-18
+
+The private headless Sway 1.11 session, with its pixman renderer and Mesa lavapipe
+Vulkan client, passed these checks without touching the running Hyprland session:
+
+- Simultaneous 1× and 1.25× output scaling, followed by 1.5× and 2× scale changes.
+- Correct physical buffer dimensions, upright quadrant pixels, and 90-degree output rotation.
+- Output disable/enable, a newly created output, and disappearance/recovery of all outputs.
+- Selected-output placement and an idle static scene with no additional presentations.
+- Native video pixels and looping before/after logical rectangle resizing, without
+  constructing a new decoder or initializing the scene GPU.
+- Surface removal after SIGINT/SIGKILL, and prompt worker failure on compositor death.
+
+The script creates a temporary runtime directory, Wayland socket, IPC socket and
+compositor configuration. Every display command and screenshot targets that private
+session. It generates original quadrant artwork and cleans up its own processes.
+These tests are also run in Linux CI with software rendering. They exercise real
+protocol objects and composited pixels, but do not measure physical GPU performance,
+power savings or physical display suspend/reconnection.
+
+Install `sway`, `grim`, Pillow and Mesa's Vulkan software driver to run:
+
+```sh
+cargo build -p openwall --locked
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json python3 scripts/test_wayland_headless.py
+```
+
+The ICD filename may differ by distribution. To include native video resizing, add
+`--video-fixture /tmp/openwall-loop.webm` using the original animated fixture generated
+above. GStreamer's VP9 decoder and Wayland sink plugins must be installed.
+
+The live Fedora/Hyprland regression also passed after fixing an unchanged-scale
+notification feedback loop observed there. The static scene made no additional
+presentations during its three-second idle sample, measured 0.0% of one CPU core and
+128.0 MiB development-build RSS. Video selected `nvvp9dec`, looped twice, used no scene
+GPU and cleaned up its surfaces. Its sink still received system-memory RGBx buffers;
+this change does not establish zero-copy presentation or a sustained energy budget.
+
 ## Required before support claims
 
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,

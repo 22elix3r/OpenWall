@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Native layer-shell presentation. No XWayland window placement workaround.
+mod layout;
+
+use layout::Layout;
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
@@ -27,6 +30,10 @@ use wayland_client::{
         wl_surface,
     },
 };
+use wayland_protocols::wp::{
+    fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1},
+    viewporter::client::{wp_viewport, wp_viewporter},
+};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::gpu::{Gpu, Painter};
@@ -49,15 +56,22 @@ struct Output {
     painter: Option<Painter>,
     layer: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     native: Option<wl_surface::WlSurface>,
+    viewport: Option<wp_viewport::WpViewport>,
+    fractional: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
+    fractional_scale: Option<u32>,
+    preferred_integer_scale: Option<i32>,
     proxy: wl_output::WlOutput,
     info: DisplayInfo,
     configured: Option<(u32, u32)>,
     dirty: bool,
     closed: bool,
+    rotated: bool,
+    retry_at: Option<Instant>,
+    retry_count: u32,
 }
 
-impl Drop for Output {
-    fn drop(&mut self) {
+impl Output {
+    fn release_surface(&mut self) {
         #[cfg(feature = "video")]
         self.video.take();
         if let Some(buffer) = self.black.take() {
@@ -65,11 +79,30 @@ impl Drop for Output {
         }
         self.surface.take();
         self.painter.take();
+        if let Some(viewport) = self.viewport.take() {
+            viewport.destroy();
+        }
+        if let Some(fractional) = self.fractional.take() {
+            fractional.destroy();
+        }
         if let Some(layer) = self.layer.take() {
             layer.destroy();
         }
         if let Some(surface) = self.native.take() {
             surface.destroy();
+        }
+        self.configured = None;
+        self.fractional_scale = None;
+        self.preferred_integer_scale = None;
+        self.retry_at = None;
+    }
+}
+
+impl Drop for Output {
+    fn drop(&mut self) {
+        self.release_surface();
+        if self.proxy.version() >= 3 {
+            self.proxy.release();
         }
     }
 }
@@ -79,6 +112,8 @@ struct State {
     compositor: Option<wl_compositor::WlCompositor>,
     shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     shm: Option<wl_shm::WlShm>,
+    viewporter: Option<wp_viewporter::WpViewporter>,
+    fractional_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
 }
 
 fn connect() -> Result<(Connection, wayland_client::EventQueue<State>, State)> {
@@ -90,6 +125,8 @@ fn connect() -> Result<(Connection, wayland_client::EventQueue<State>, State)> {
         compositor: None,
         shell: None,
         shm: None,
+        viewporter: None,
+        fractional_manager: None,
     };
     queue.roundtrip(&mut state)?;
     queue.roundtrip(&mut state)?;
@@ -180,6 +217,8 @@ fn run_content(
             break;
         }
         let shm = state.shm.clone();
+        let viewporter = state.viewporter.clone();
+        let fractional_manager = state.fractional_manager.clone();
         #[cfg(not(feature = "video"))]
         let _ = &shm;
         for (id, item) in &mut state.outputs {
@@ -191,11 +230,17 @@ fn run_content(
                 continue;
             }
             if item.native.is_none() {
-                let native = compositor.create_surface(&queue.handle(), ());
+                let native = compositor.create_surface(&queue.handle(), *id);
                 let region = compositor.create_region(&queue.handle(), ());
                 native.set_input_region(Some(&region));
                 region.destroy();
-                native.set_buffer_scale(item.info.scale.max(1));
+                if let Some(manager) = &viewporter {
+                    item.viewport = Some(manager.get_viewport(&native, &queue.handle(), ()));
+                    if let Some(manager) = &fractional_manager {
+                        item.fractional =
+                            Some(manager.get_fractional_scale(&native, &queue.handle(), *id));
+                    }
+                }
                 let layer = shell.get_layer_surface(
                     &native,
                     Some(&item.proxy),
@@ -219,38 +264,64 @@ fn run_content(
                 item.layer = Some(layer);
             }
             if item.dirty
+                && item.retry_at.is_none_or(|at| Instant::now() >= at)
                 && let Some((width, height)) = item.configured
             {
                 let native = item.native.as_ref().context("missing Wayland surface")?;
-                let scale = item.info.scale.max(1) as u32;
-                native.set_buffer_scale(scale as i32);
+                let integer_scale = if native.version() >= 3 {
+                    item.preferred_integer_scale.unwrap_or(item.info.scale)
+                } else {
+                    1
+                };
+                let layout = Layout::new(
+                    (width, height),
+                    integer_scale,
+                    item.fractional_scale,
+                    item.viewport.is_some(),
+                )?;
+                if native.version() >= 3 {
+                    native.set_buffer_scale(layout.buffer_scale);
+                }
+                if let Some(viewport) = &item.viewport {
+                    viewport.set_destination(width as i32, height as i32);
+                }
                 #[cfg(feature = "video")]
                 if let Some(path) = &video_path {
                     let shm = shm
                         .as_ref()
                         .context("compositor has no shared-memory buffers")?;
-                    let buffer = black_buffer(shm, &queue.handle(), width, height, scale)?;
+                    // A viewport stretches a single black pixel behind the video subsurface.
+                    let black_size = if layout.viewport {
+                        (1, 1)
+                    } else {
+                        layout.buffer
+                    };
+                    let buffer = black_buffer(shm, &queue.handle(), black_size.0, black_size.1)?;
                     native.attach(Some(&buffer), 0, 0);
                     native.damage(0, 0, width as i32, height as i32);
                     native.commit();
-                    item.video.take();
                     if let Some(previous) = item.black.replace(buffer) {
                         previous.destroy();
                     }
-                    item.video = Some(crate::video::Player::new(
-                        path,
-                        Some((
-                            conn.backend().display_ptr() as usize,
-                            native.id().as_ptr() as usize,
-                            width,
-                            height,
-                        )),
-                        Some(wake_write.clone()),
-                    )?);
+                    if let Some(video) = &item.video {
+                        video.resize(width, height)?;
+                    } else {
+                        item.video = Some(crate::video::Player::new(
+                            path,
+                            Some((
+                                conn.backend().display_ptr() as usize,
+                                native.id().as_ptr() as usize,
+                                width,
+                                height,
+                            )),
+                            Some(wake_write.clone()),
+                        )?);
+                    }
                     item.dirty = false;
+                    item.retry_at = None;
                     eprintln!(
-                        "Native video attached on {} (no scene GPU initialized)",
-                        item.info.name
+                        "Native video attached on {} (logical {}×{}, no scene GPU initialized)",
+                        item.info.name, width, height
                     );
                     continue;
                 }
@@ -282,7 +353,7 @@ fn run_content(
                 }
                 let gpu = gpu.as_ref().context("GPU not initialized")?;
                 let surface = item.surface.as_ref().context("surface not initialized")?;
-                let config = gpu.configure(surface, width * scale, height * scale)?;
+                let config = gpu.configure(surface, layout.buffer.0, layout.buffer.1)?;
                 if item
                     .painter
                     .as_ref()
@@ -303,10 +374,20 @@ fn run_content(
                     .as_ref()
                     .context("painter was not initialized")?;
                 item.dirty = !painter.present(gpu, surface)?;
-                eprintln!(
-                    "Wallpaper presented on {} ({}×{}, scale {})",
-                    item.info.name, config.width, config.height, scale
-                );
+                if item.dirty {
+                    item.retry_count = item.retry_count.saturating_add(1);
+                    item.retry_at = Some(
+                        Instant::now()
+                            + Duration::from_millis((50u64 << item.retry_count.min(5)).min(1000)),
+                    );
+                } else {
+                    item.retry_count = 0;
+                    item.retry_at = None;
+                    eprintln!(
+                        "Wallpaper presented on {} ({}×{}, logical {}×{})",
+                        item.info.name, config.width, config.height, width, height
+                    );
+                }
             }
         }
         conn.flush()?;
@@ -317,7 +398,13 @@ fn run_content(
             PollFd::new(&conn, PollFlags::IN),
             PollFd::new(&wake_read, PollFlags::IN),
         ];
-        let timeout = deadline.map(|x| {
+        let next_wake = state
+            .outputs
+            .values()
+            .filter_map(|item| item.retry_at)
+            .chain(deadline)
+            .min();
+        let timeout = next_wake.map(|x| {
             let d = x.saturating_duration_since(Instant::now());
             Timespec {
                 tv_sec: d.as_secs() as i64,
@@ -325,6 +412,13 @@ fn run_content(
             }
         });
         match poll(&mut fds, timeout.as_ref()) {
+            Ok(_)
+                if fds[0]
+                    .revents()
+                    .intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL) =>
+            {
+                bail!("Wayland compositor disconnected");
+            }
             Ok(_) if fds[0].revents().contains(PollFlags::IN) => {
                 guard.read()?;
             }
@@ -360,6 +454,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     state.shell = Some(registry.bind(name, version.min(4), qh, ()))
                 }
                 "wl_shm" => state.shm = Some(registry.bind(name, version.min(1), qh, ())),
+                "wp_viewporter" => state.viewporter = Some(registry.bind(name, 1, qh, ())),
+                "wp_fractional_scale_manager_v1" => {
+                    state.fractional_manager = Some(registry.bind(name, 1, qh, ()))
+                }
                 "wl_output" => {
                     let proxy = registry.bind(name, version.min(4), qh, name);
                     state.outputs.insert(
@@ -375,10 +473,17 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                             painter: None,
                             layer: None,
                             native: None,
+                            viewport: None,
+                            fractional: None,
+                            fractional_scale: None,
+                            preferred_integer_scale: None,
                             black: None,
                             configured: None,
                             dirty: true,
                             closed: false,
+                            rotated: false,
+                            retry_at: None,
+                            retry_count: 0,
                             #[cfg(feature = "video")]
                             video: None,
                         },
@@ -407,11 +512,27 @@ impl Dispatch<wl_output::WlOutput, u32> for State {
             return;
         };
         match event {
+            wl_output::Event::Geometry {
+                transform: WEnum::Value(transform),
+                ..
+            } => {
+                item.rotated = matches!(
+                    transform,
+                    wl_output::Transform::_90
+                        | wl_output::Transform::_270
+                        | wl_output::Transform::Flipped90
+                        | wl_output::Transform::Flipped270
+                );
+            }
             wl_output::Event::Name { name } => item.info.name = name,
             wl_output::Event::Description { description } => item.info.description = description,
             wl_output::Event::Scale { factor } => {
-                item.info.scale = factor.max(1);
-                item.dirty = true;
+                let factor = factor.max(1);
+                if item.info.scale != factor {
+                    item.info.scale = factor;
+                    item.dirty = true;
+                    item.retry_at = None;
+                }
             }
             wl_output::Event::Mode {
                 flags: WEnum::Value(flags),
@@ -444,26 +565,32 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u32> for State {
                     height,
                 } => {
                     layer.ack_configure(serial);
-                    item.configured = Some((
+                    let (fallback_width, fallback_height) = if item.rotated {
+                        (item.info.height, item.info.width)
+                    } else {
+                        (item.info.width, item.info.height)
+                    };
+                    let configured = Some((
                         if width == 0 {
-                            (item.info.width / item.info.scale.max(1) as u32).max(1)
+                            (fallback_width / item.info.scale.max(1) as u32).max(1)
                         } else {
                             width
                         },
                         if height == 0 {
-                            (item.info.height / item.info.scale.max(1) as u32).max(1)
+                            (fallback_height / item.info.scale.max(1) as u32).max(1)
                         } else {
                             height
                         },
                     ));
-                    item.dirty = true;
+                    if item.configured != configured {
+                        item.configured = configured;
+                        item.dirty = true;
+                        item.retry_at = None;
+                    }
                 }
                 zwlr_layer_surface_v1::Event::Closed => {
                     item.closed = true;
-                    #[cfg(feature = "video")]
-                    item.video.take();
-                    item.surface.take();
-                    item.painter.take();
+                    item.release_surface();
                 }
                 _ => {}
             }
@@ -473,7 +600,49 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u32> for State {
 
 delegate_noop!(State: ignore wl_compositor::WlCompositor);
 delegate_noop!(State: ignore wl_region::WlRegion);
-delegate_noop!(State: ignore wl_surface::WlSurface);
+impl Dispatch<wl_surface::WlSurface, u32> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_surface::WlSurface,
+        event: wl_surface::Event,
+        id: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_surface::Event::PreferredBufferScale { factor } = event
+            && let Some(item) = state.outputs.get_mut(id)
+            && item.preferred_integer_scale != Some(factor.max(1))
+        {
+            item.preferred_integer_scale = Some(factor.max(1));
+            item.dirty = true;
+            item.retry_at = None;
+        }
+    }
+}
+
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, u32> for State {
+    fn event(
+        state: &mut Self,
+        _: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        id: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event
+            && let Some(item) = state.outputs.get_mut(id)
+            && item.fractional_scale != Some(scale)
+        {
+            item.fractional_scale = Some(scale);
+            item.dirty = true;
+            item.retry_at = None;
+        }
+    }
+}
+
+delegate_noop!(State: ignore wp_viewporter::WpViewporter);
+delegate_noop!(State: ignore wp_viewport::WpViewport);
+delegate_noop!(State: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
 delegate_noop!(State: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 delegate_noop!(State: ignore wl_shm::WlShm);
 delegate_noop!(State: ignore wl_shm_pool::WlShmPool);
@@ -485,13 +654,8 @@ fn black_buffer(
     qh: &QueueHandle<State>,
     width: u32,
     height: u32,
-    scale: u32,
 ) -> Result<wl_buffer::WlBuffer> {
     use std::os::fd::AsFd;
-    let width = width.checked_mul(scale).context("output width overflow")?;
-    let height = height
-        .checked_mul(scale)
-        .context("output height overflow")?;
     let bytes = u64::from(width) * u64::from(height) * 4;
     anyhow::ensure!(
         width <= 16384 && height <= 16384 && bytes <= 256 * 1024 * 1024,

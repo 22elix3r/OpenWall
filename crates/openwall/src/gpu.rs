@@ -78,6 +78,11 @@ impl Gpu {
         width: u32,
         height: u32,
     ) -> Result<wgpu::SurfaceConfiguration> {
+        let limit = self.device.limits().max_texture_dimension_2d;
+        ensure!(
+            width > 0 && height > 0 && width <= limit && height <= limit,
+            "presentation size {width}×{height} exceeds GPU limit {limit}"
+        );
         let mut config = surface
             .get_default_config(&self.adapter, width.max(1), height.max(1))
             .context("surface is incompatible with GPU")?;

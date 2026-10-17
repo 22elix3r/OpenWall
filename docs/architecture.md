@@ -26,6 +26,25 @@ surface lifetime requirements. Linux video uses GStreamer-owned Wayland subsurfa
 the parent surface has a static shared-memory black buffer, so video workers never
 initialize a second scene GPU/device. macOS uses AppKit and AVFoundation.
 
+Wayland surface-local dimensions and physical buffer dimensions are separate. The
+`wp_fractional_scale_v1` preference uses units of 1/120; buffers round to physical
+pixels while `wp_viewport` keeps the logical destination and `wl_surface` buffer scale
+at one. Compositors without those extensions use the preferred integer surface/output
+scale. Dimension and allocation limits are checked before buffer creation or GPU
+configuration. Video parent surfaces use a single black pixel when viewporter is
+available, and rectangle changes resize the existing native video overlay instead of
+restarting its decoder. Temporary frame-acquisition failures retry with a capped delay;
+successful static presentation returns to an event-only wait. Compositor disconnection
+terminates the worker with an error. Output removal releases the decoder/GPU surface,
+viewport, fractional-scale object, layer surface, native surface and output binding.
+Repeated identical scale preferences/configure notifications do not schedule a redraw;
+configure serials are still acknowledged. This prevents a commit/notification feedback
+loop on compositors that resend unchanged preferences.
+
+Protocol references: [fractional scale](https://wayland.app/protocols/fractional-scale-v1),
+[viewporter](https://wayland.app/protocols/viewporter), and the
+[core Wayland specification](https://wayland.freedesktop.org/docs/html/apa.html).
+
 `openwall-ui` exposes Rust objects to QML through CXX-Qt. Content inspection runs in a
 separate process on a background thread; the GUI never evaluates wallpaper scripts or
 loads downloaded QML. Worker logs are continuously drained and capped at 16 KiB to

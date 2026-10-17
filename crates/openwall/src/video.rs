@@ -14,6 +14,7 @@ use std::{
 pub struct Player {
     pipeline: gst::Element,
     bus: gst::Bus,
+    overlay: Option<gstreamer_video::VideoOverlay>,
 }
 
 impl Player {
@@ -31,6 +32,7 @@ impl Player {
             .build()
             .context("GStreamer playbin is missing")?;
         pipeline.set_property_from_str("flags", "video");
+        let mut native_overlay = None;
         if let Some((display, surface, width, height)) = native {
             let sink = gst::ElementFactory::make("waylandsink")
                 .build()
@@ -71,6 +73,7 @@ impl Player {
                 overlay.set_window_handle(surface);
             }
             overlay.set_render_rectangle(0, 0, width as i32, height as i32)?;
+            native_overlay = Some(overlay);
             pipeline.set_property("video-sink", sink);
         }
         pipeline.connect("deep-element-added", false, |values| {
@@ -99,7 +102,11 @@ impl Player {
                 gst::BusSyncReply::Pass
             });
         }
-        let player = Self { pipeline, bus };
+        let player = Self {
+            pipeline,
+            bus,
+            overlay: native_overlay,
+        };
         player
             .pipeline
             .set_state(gst::State::Playing)
@@ -127,6 +134,14 @@ impl Player {
                 ),
                 _ => {}
             }
+        }
+        Ok(())
+    }
+
+    pub fn resize(&self, width: u32, height: u32) -> Result<()> {
+        if let Some(overlay) = &self.overlay {
+            overlay.set_render_rectangle(0, 0, width as i32, height as i32)?;
+            overlay.expose();
         }
         Ok(())
     }

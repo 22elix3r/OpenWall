@@ -16,3 +16,10 @@ part of M0; it does not mark untested platforms or planned features as supported
 Immediate follow-up: qualify the macOS implementation on real hardware, prove GNOME and
 Plasma presentation without running content inside the shell, then introduce the manager
 and control protocol. Do not build discovery or a browser runtime ahead of those gates.
+
+M0 progress (2026-10-18): per-surface fractional-scale/viewporter presentation, bounded
+physical buffer sizing, video resize without decoder replacement, and a private headless
+Sway regression suite now cover mixed scales, rotation, newly connected outputs, complete
+output disable/enable, selected-output placement, static idle behavior, worker crashes,
+and compositor loss. These are automated protocol/pixel checks, not qualification of
+physical monitor hot-plug, suspend/resume, energy use, macOS, GNOME or Plasma.

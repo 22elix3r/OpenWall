@@ -18,7 +18,9 @@ and visible; a successful build does not mean a desktop has been hardware-qualif
 - Qt Quick GUI driven by Rust through CXX-Qt: local file selection, preview, display selection,
   wallpaper placement, and stop controls. Wallpaper rendering runs in a separate process.
 - Native Wayland layer-shell background surfaces with click-through input and output hot-plug handling.
+- Per-surface fractional scaling through Wayland viewporter, with integer-scale fallback.
 - Linux video playback through GStreamer/waylandsink, with native decoding and looping.
+  Display resizing retains the existing decoder and playback position.
 - macOS AppKit desktop window integration and AVFoundation video playback implementation.
 - Offline PNG rendering, JSON compatibility reports, and desktop diagnostics.
 - Static scenes render on changes and then sleep; no continuous animation loop for still content.
@@ -26,7 +28,9 @@ and visible; a successful build does not mean a desktop has been hardware-qualif
 **Validated locally:** Fedora/Hyprland, Vulkan rendering, desktop surface creation/removal,
 Qt GUI startup, and looping video. **Pending qualification:** macOS desktop/video behavior,
 multiple monitors, fractional scaling, sleep/wake, and other GPU/compositor combinations.
-CI builds macOS, but cannot certify real desktop behavior.
+CI builds macOS, but cannot certify real desktop behavior. An isolated headless Sway
+suite verifies mixed scaling, rotation, output removal/reconnection, video resizing,
+and worker/compositor crash cleanup using actual displayed pixels.
 
 GNOME and Plasma require dedicated integrations; these are not implemented yet.
 There is no X11 desktop backend yet. macOS currently applies to one selected/default
