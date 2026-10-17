@@ -87,6 +87,12 @@ presentations during its three-second idle sample, measured 0.0% of one CPU core
 GPU and cleaned up its surfaces. Its sink still received system-memory RGBx buffers;
 this change does not establish zero-copy presentation or a sustained energy budget.
 
+Ubuntu's Sway 1.9/wlroots 0.17.1 packages were also extracted into a temporary directory
+and tested on the Fedora host. They exposed an output-recovery case in which a queued
+frame and frame callback preceded successful presentation. Bounded `wp_presentation`
+recovery now passes the complete lifecycle/video suite there as well. Two deterministic
+timer-policy tests check the retry budget and cancellation after confirmation.
+
 ## Required before support claims
 
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,

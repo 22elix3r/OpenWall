@@ -40,6 +40,12 @@ viewport, fractional-scale object, layer surface, native surface and output bind
 Repeated identical scale preferences/configure notifications do not schedule a redraw;
 configure serials are still acknowledged. This prevents a commit/notification feedback
 loop on compositors that resend unchanged preferences.
+New scene surfaces request presentation feedback and retry an unconfirmed initial
+frame at 200 ms intervals, with at most three submissions. `wp_presentation` confirmation
+ends recovery; compositors without it use the weaker frame-callback hint. Missing
+feedback never creates a permanent redraw loop. This handles initial frames lost during
+output recovery; a normal frame callback alone can arrive before a successful display
+commit on older compositors.
 
 Protocol references: [fractional scale](https://wayland.app/protocols/fractional-scale-v1),
 [viewporter](https://wayland.app/protocols/viewporter), and the

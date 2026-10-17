@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Native layer-shell presentation. No XWayland window placement workaround.
 mod layout;
+mod recovery;
 
 use layout::Layout;
+use recovery::Recovery;
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
@@ -26,12 +28,13 @@ use serde::Serialize;
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop,
     protocol::{
-        wl_buffer, wl_compositor, wl_output, wl_region, wl_registry, wl_shm, wl_shm_pool,
-        wl_surface,
+        wl_buffer, wl_callback, wl_compositor, wl_output, wl_region, wl_registry, wl_shm,
+        wl_shm_pool, wl_surface,
     },
 };
 use wayland_protocols::wp::{
     fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1},
+    presentation_time::client::{wp_presentation, wp_presentation_feedback},
     viewporter::client::{wp_viewport, wp_viewporter},
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -68,6 +71,7 @@ struct Output {
     rotated: bool,
     retry_at: Option<Instant>,
     retry_count: u32,
+    recovery: Recovery,
 }
 
 impl Output {
@@ -95,6 +99,7 @@ impl Output {
         self.fractional_scale = None;
         self.preferred_integer_scale = None;
         self.retry_at = None;
+        self.recovery = Recovery::default();
     }
 }
 
@@ -114,6 +119,7 @@ struct State {
     shm: Option<wl_shm::WlShm>,
     viewporter: Option<wp_viewporter::WpViewporter>,
     fractional_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    presentation: Option<wp_presentation::WpPresentation>,
 }
 
 fn connect() -> Result<(Connection, wayland_client::EventQueue<State>, State)> {
@@ -127,6 +133,7 @@ fn connect() -> Result<(Connection, wayland_client::EventQueue<State>, State)> {
         shm: None,
         viewporter: None,
         fractional_manager: None,
+        presentation: None,
     };
     queue.roundtrip(&mut state)?;
     queue.roundtrip(&mut state)?;
@@ -219,6 +226,7 @@ fn run_content(
         let shm = state.shm.clone();
         let viewporter = state.viewporter.clone();
         let fractional_manager = state.fractional_manager.clone();
+        let presentation = state.presentation.clone();
         #[cfg(not(feature = "video"))]
         let _ = &shm;
         for (id, item) in &mut state.outputs {
@@ -228,6 +236,9 @@ fn run_content(
             }
             if item.closed || output.as_ref().is_some_and(|name| name != &item.info.name) {
                 continue;
+            }
+            if item.recovery.take_due(Instant::now()) {
+                item.dirty = true;
             }
             if item.native.is_none() {
                 let native = compositor.create_surface(&queue.handle(), *id);
@@ -373,6 +384,13 @@ fn run_content(
                     .painter
                     .as_ref()
                     .context("painter was not initialized")?;
+                if item.recovery.request_callback() {
+                    if let Some(presentation) = &presentation {
+                        presentation.feedback(native, &queue.handle(), *id);
+                    } else {
+                        native.frame(&queue.handle(), *id);
+                    }
+                }
                 item.dirty = !painter.present(gpu, surface)?;
                 if item.dirty {
                     item.retry_count = item.retry_count.saturating_add(1);
@@ -383,6 +401,7 @@ fn run_content(
                 } else {
                     item.retry_count = 0;
                     item.retry_at = None;
+                    item.recovery.submitted(Instant::now());
                     eprintln!(
                         "Wallpaper presented on {} ({}×{}, logical {}×{})",
                         item.info.name, config.width, config.height, width, height
@@ -402,6 +421,12 @@ fn run_content(
             .outputs
             .values()
             .filter_map(|item| item.retry_at)
+            .chain(
+                state
+                    .outputs
+                    .values()
+                    .filter_map(|item| item.recovery.deadline()),
+            )
             .chain(deadline)
             .min();
         let timeout = next_wake.map(|x| {
@@ -458,6 +483,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                 "wp_fractional_scale_manager_v1" => {
                     state.fractional_manager = Some(registry.bind(name, 1, qh, ()))
                 }
+                "wp_presentation" => state.presentation = Some(registry.bind(name, 1, qh, ())),
                 "wl_output" => {
                     let proxy = registry.bind(name, version.min(4), qh, name);
                     state.outputs.insert(
@@ -484,6 +510,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                             rotated: false,
                             retry_at: None,
                             retry_count: 0,
+                            recovery: Recovery::default(),
                             #[cfg(feature = "video")]
                             video: None,
                         },
@@ -600,6 +627,39 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u32> for State {
 
 delegate_noop!(State: ignore wl_compositor::WlCompositor);
 delegate_noop!(State: ignore wl_region::WlRegion);
+impl Dispatch<wl_callback::WlCallback, u32> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        _: wl_callback::Event,
+        id: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let Some(item) = state.outputs.get_mut(id) {
+            item.recovery.callback_done();
+        }
+    }
+}
+
+impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, u32> for State {
+    fn event(
+        state: &mut Self,
+        _: &wp_presentation_feedback::WpPresentationFeedback,
+        event: wp_presentation_feedback::Event,
+        id: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wp_presentation_feedback::Event::Presented { .. } = event
+            && let Some(item) = state.outputs.get_mut(id)
+        {
+            item.recovery.callback_done();
+        }
+    }
+}
+
+delegate_noop!(State: ignore wp_presentation::WpPresentation);
 impl Dispatch<wl_surface::WlSurface, u32> for State {
     fn event(
         state: &mut Self,
