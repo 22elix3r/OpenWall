@@ -50,11 +50,9 @@ jobs:
         run: cargo test --locked -p openwall --test cli gpu_ -- --nocapture
       - name: Headless Wayland lifecycle and video
         if: runner.os == 'Linux'
-        env:
-          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: |
           ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=30 -t 2 -an -c:v libvpx-vp9 -b:v 400k /tmp/openwall-loop.webm
-          /usr/bin/python3 scripts/test_wayland_headless.py --video-fixture /tmp/openwall-loop.webm
+          /usr/bin/python3 scripts/test_wayland_headless.py --software-vulkan --video-fixture /tmp/openwall-loop.webm
       - name: GUI startup
         env:
           QT_QPA_PLATFORM: offscreen

@@ -72,10 +72,11 @@ Install `sway`, `grim`, Pillow and Mesa's Vulkan software driver to run:
 
 ```sh
 cargo build -p openwall --locked
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json python3 scripts/test_wayland_headless.py
+python3 scripts/test_wayland_headless.py --software-vulkan
 ```
 
-The ICD filename may differ by distribution. To include native video resizing, add
+The script discovers the distribution's generic or architecture-specific lavapipe ICD.
+To include native video resizing, add
 `--video-fixture /tmp/openwall-loop.webm` using the original animated fixture generated
 above. GStreamer's VP9 decoder and Wayland sink plugins must be installed.
 

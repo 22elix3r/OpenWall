@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import signal
 import subprocess
@@ -32,11 +33,19 @@ def wait_for(check, description, timeout=15):
 
 
 class Session:
-    def __init__(self, directory, sway):
+    def __init__(self, directory, sway, software_vulkan):
         self.directory = directory
         runtime = directory / "runtime"
         runtime.mkdir(mode=0o700)
         self.env = os.environ.copy()
+        if software_vulkan:
+            # Fedora uses an architecture suffix; current Ubuntu Mesa uses a generic name.
+            driver_dir = Path("/usr/share/vulkan/icd.d")
+            candidates = [driver_dir / f"lvp_icd.{platform.machine()}.json",
+                          driver_dir / "lvp_icd.json"]
+            icd = next((path for path in candidates if path.is_file()), None)
+            assert icd, f"Mesa lavapipe ICD not found; installed: {list(driver_dir.glob('*.json'))}"
+            self.env.update(VK_DRIVER_FILES=str(icd), VK_ICD_FILENAMES=str(icd))
         for key in ["WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY", "SWAYSOCK",
                     "HYPRLAND_INSTANCE_SIGNATURE", "DBUS_SESSION_BUS_ADDRESS"]:
             self.env.pop(key, None)
@@ -155,6 +164,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/openwall")
     parser.add_argument("--sway", default="sway")
+    parser.add_argument("--software-vulkan", action="store_true", help="discover and use Mesa lavapipe")
     parser.add_argument("--video-fixture", type=Path)
     args = parser.parse_args()
     for tool in [args.sway, "swaymsg", "grim"]:
@@ -168,7 +178,7 @@ def main():
                                 (0, 180, 319, 359), (320, 180, 639, 359)], COLORS):
             draw.rectangle(rect, fill=color)
         image.save(fixture)
-        session = Session(directory, args.sway)
+        session = Session(directory, args.sway, args.software_vulkan)
         try:
             session.connect()
             names = sorted(item["name"] for item in session.outputs())
@@ -254,7 +264,8 @@ def main():
                 "mixed 1x/1.25x", "static idle", "1.5x/2x updates", "rotation", "output disable/enable",
                 "new output", "all outputs disable/enable",
                 "selected output", "graceful cleanup", "SIGKILL cleanup", "compositor loss"],
-                "video_resize_without_decoder_restart": bool(args.video_fixture)}, indent=2))
+                "video_resize_without_decoder_restart": bool(args.video_fixture),
+                "vulkan_icd": session.env.get("VK_DRIVER_FILES", "loader default")}, indent=2))
         except BaseException:
             print(session.diagnostics())
             raise
