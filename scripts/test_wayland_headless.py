@@ -87,6 +87,14 @@ class Session:
     def outputs(self):
         return self.ipc("", "get_outputs")
 
+    def windows(self):
+        def walk(node):
+            if node.get("pid") is not None:
+                yield node
+            for child in [*node.get("nodes", []), *node.get("floating_nodes", [])]:
+                yield from walk(child)
+        return list(walk(self.ipc("", "get_tree")))
+
     def start_worker(self, binary, path, output=None):
         log = (self.directory / f"worker-{len(self.logs)}.log").open("w+")
         self.logs.append(log)
@@ -243,6 +251,7 @@ def main():
                 child, log = session.start_worker(args.binary, args.video_fixture.resolve(), second)
                 session.expect_log(child, log, "First video buffer:")
                 session.expect_log(child, log, "Video loop restarted")
+                assert not session.windows(), "video opened a separate application window"
                 wait_for(lambda: session.video_visible(second), "video pixels at fractional scale")
                 decoders = session.text(log).count("GStreamer decoder:")
                 offset = len(session.text(log))

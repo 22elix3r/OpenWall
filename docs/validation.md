@@ -93,6 +93,13 @@ frame and frame callback preceded successful presentation. Bounded `wp_presentat
 recovery now passes the complete lifecycle/video suite there as well. Two deterministic
 timer-policy tests check the retry budget and cancellation after confirmation.
 
+GStreamer 1.24.2's Wayland sink and helper library were extracted separately to reproduce
+Ubuntu's embedding behavior. Its display-context name differs from the primary name in
+1.26; the shared compatibility name now works with both, and setup errors are collected
+before the sink is parented into playbin. The complete suite passes with the older sink
+and checks that desktop video never opens a separate application window. The one-pixel
+parent optimization remains enabled.
+
 ## Required before support claims
 
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,

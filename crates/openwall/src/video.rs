@@ -37,6 +37,10 @@ impl Player {
             let sink = gst::ElementFactory::make("waylandsink")
                 .build()
                 .context("GStreamer waylandsink is missing")?;
+            // The overlay setters can post errors before playbin parents the sink.
+            // Keep them observable rather than letting it open a separate video window.
+            let setup_bus = gst::Bus::new();
+            sink.set_bus(Some(&setup_bus));
             if let Some(pad) = sink.static_pad("sink") {
                 pad.add_probe(gst::PadProbeType::BUFFER, |pad, info| {
                     let dmabuf = info.buffer().is_some_and(|buffer| {
@@ -51,7 +55,8 @@ impl Player {
                     gst::PadProbeReturn::Remove
                 });
             }
-            let mut context = gst::Context::new("GstWaylandDisplayHandleContextType", true);
+            // 1.24 requires this name; 1.26 also accepts it as a compatibility alias.
+            let mut context = gst::Context::new("GstWlDisplayHandleContextType", true);
             let structure = context
                 .get_mut()
                 .context("context is not writable")?
@@ -73,6 +78,16 @@ impl Player {
                 overlay.set_window_handle(surface);
             }
             overlay.set_render_rectangle(0, 0, width as i32, height as i32)?;
+            if let Some(message) = setup_bus.pop_filtered(&[gst::MessageType::Error])
+                && let gst::MessageView::Error(error) = message.view()
+            {
+                bail!(
+                    "native Wayland video setup failed: {} ({})",
+                    error.error(),
+                    error.debug().unwrap_or_default()
+                );
+            }
+            sink.set_bus(None::<&gst::Bus>);
             native_overlay = Some(overlay);
             pipeline.set_property("video-sink", sink);
         }
