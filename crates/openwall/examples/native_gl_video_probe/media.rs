@@ -146,6 +146,12 @@ impl Media {
         Ok(())
     }
 
+    #[allow(dead_code)] // Replacement retains the previous source in PAUSED for rollback.
+    pub fn pause(&self) -> Result<()> {
+        self.pipeline.set_state(gst::State::Paused)?;
+        Ok(())
+    }
+
     pub fn take(&self) -> Result<Option<gst::Sample>> {
         Ok(self
             .latest

@@ -22,12 +22,13 @@ ROOT = Path(__file__).resolve().parents[1]
 FRAMES, FPS = 12, 2
 
 
-def fixture(directory, nvidia):
+def fixture(directory, nvidia, *, variant=0):
+    assert variant in [0, 1]
     colors = []
-    base = patches(False)
+    base = patches(False)[::1 if variant == 0 else -1]
     for index in range(FRAMES):
         frame = base[index % len(base):] + base[:index % len(base)]
-        frame[0] = (16 + 8 * index, 128, 128)
+        frame[0] = (16 + 8 * index, 128, 128) if variant == 0 else (140 + 8 * index, 110, 150)
         colors.append(frame)
     scale = 2 if nvidia else 1
     raw_bytes = b"".join((enlarged_yuv if nvidia else original_yuv)(frame) for frame in colors)
