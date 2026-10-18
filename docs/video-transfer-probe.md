@@ -58,11 +58,27 @@ until mapping. The explicit CPU consumer includes that map/copy cost, unlike a b
 sink. It adds a controlled full-buffer copy to both CPU-bound modes; it does not reproduce
 the real Wayland sink's buffer-pool allocation or compositor work.
 
-The probe performs no pixel/color comparison; a GL pipeline can negotiate different color
-metadata from a CPU pipeline. Similar caps or successful playback do not establish matching
-colors. The GL-download mode consumes CPU-visible bytes even when the decoder outputs
+The probe itself performs no pixel/color comparison; a GL pipeline can negotiate different
+color metadata from a CPU pipeline. The [SDR color regression suite](video-color.md)
+compares captured samples with independent reference equations and records an unresolved
+CPU precision gap. Similar caps or successful playback do not establish matching colors.
+The GL-download mode consumes CPU-visible bytes even when the decoder outputs
 `GLMemory` and the final allocator is PBO-backed. DMA-BUF delivery to a fake sink does not
 establish compositor import, fence correctness, end-to-end zero-copy or lower energy use.
+
+## Capturing the first frame
+
+CPU-bound modes accept `--first-frame /path/to/new-frame.png`. Capture maps the first
+frame using GStreamer's video-frame API, honoring buffer offsets and row strides, and
+copies only active RGBA pixels. The report includes capture dimensions, caps and PTS.
+The bounded extra copy happens during startup; PNG encoding happens after playback stops.
+The PNG contains the converted RGBA bytes without a color-profile transformation. It
+does not establish how a compositor or display will interpret them.
+
+The path must not exist; existing files and symlinks are never overwritten. Capture
+failure fails the run. Do not enable capture for performance comparisons because it adds
+startup work and up to 256 MiB of retained pixel data. DMA-BUF mode rejects this option
+before initializing media libraries, preserving its unmapped scope.
 
 ## Regression checks
 

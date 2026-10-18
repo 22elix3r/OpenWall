@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Native GStreamer presentation; decoded frames are never sent through UI IPC.
+mod runtime;
+pub use runtime::{prepare_wayland_runtime, wayland_runtime_report};
+
 use anyhow::{Context, Result, bail};
 use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_video::prelude::*;
@@ -27,6 +30,9 @@ impl Player {
         native: Option<(usize, usize, u32, u32)>,
         wake: Option<Arc<Mutex<UnixStream>>>,
     ) -> Result<Self> {
+        if native.is_some() {
+            prepare_wayland_runtime()?;
+        }
         gst::init()?;
         let path = path.canonicalize()?;
         let uri = glib::filename_to_uri(&path, None)?;

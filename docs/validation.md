@@ -165,6 +165,21 @@ first-frame transactional presentation. Normal app-list/overview roles, monitor/
 transitions and hardware rendering remain unqualified. Normal
 GNOME Apply is still unavailable. These results establish presentation feasibility.
 
+## Ubuntu 26.04 runtime regression: 2026-10-18
+
+A rootless Ubuntu 26.04 container reproduced a stock GStreamer 1.28.2 SIGSEGV during
+native video output resizing. GDB identified `output_done` using a display pointer that
+had already been transferred on an earlier notification. The current 1.28.8 source has
+the same registration logic. The [source-included app-local helper](../integrations/gstreamer/README.md)
+patches only that registration boundary and leaves the system installation unchanged.
+
+The complete private Sway 1.11 scene/video suite passes with the patched helper and the
+distribution's 1.28.2 core/sink. It includes repeated mode/scale changes, looping without
+decoder replacement, native pixels, cleanup, hot-plug scene handling and compositor loss.
+Separate process tests verify fail-closed startup without a helper, oversized/incompatible
+metadata rejection, helper selection and included-source/hash provenance. These results
+do not qualify physical hardware or replace the remaining support gates.
+
 ## Required before support claims
 
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,

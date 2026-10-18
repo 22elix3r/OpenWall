@@ -143,7 +143,8 @@ class Session:
 
     def expect_log(self, child, log, text, after=0):
         def ready():
-            assert child.poll() is None, self.diagnostics()
+            status = child.poll()
+            assert status is None, f"Worker exited with status {status} while waiting for {text}\n{self.diagnostics()}"
             return text in self.text(log)[after:]
         wait_for(ready, text)
 
@@ -261,6 +262,11 @@ def main():
                 session.expect_log(child, log, "logical 480×270", offset)
                 session.expect_log(child, log, "Video loop restarted", offset)
                 wait_for(lambda: session.video_visible(second), "video pixels after resize")
+                offset = len(session.text(log))
+                session.ipc(f"output {second} mode 800x450 scale 1.25")
+                session.expect_log(child, log, "logical 640×360", offset)
+                session.expect_log(child, log, "Video loop restarted", offset)
+                wait_for(lambda: session.video_visible(second), "video pixels after repeated output changes")
                 assert session.text(log).count("GStreamer decoder:") == decoders, session.diagnostics()
                 assert "OpenWall GPU:" not in session.text(log), session.diagnostics()
                 session.stop_worker(child)

@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest]
+        os: [ubuntu-24.04, ubuntu-26.04, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:
@@ -31,24 +31,43 @@ jobs:
           echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-rust-v1-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-rust-v1-
+          key: ${{ matrix.os }}-rust-v2-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-rust-v2-
       - run: cargo fmt --all --check
       - name: Integration probe syntax
         run: |
-          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/test_video_transfer_probe.py
+          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/test_video_transfer_probe.py scripts/test_video_color.py scripts/build_wayland_runtime.py scripts/test_wayland_runtime.py
           node --input-type=module --check < integrations/gnome/presentation.js
       - name: Measurement harness process tests
         run: python3 -m unittest discover -s scripts/tests -v
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build --workspace --locked
+      - name: Save compiled dependencies before native integration tests
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.os }}-rust-v2-${{ hashFiles('Cargo.lock') }}
       - run: cargo test --workspace --locked
+      - name: App-local GStreamer 1.28 Wayland helper
+        if: matrix.os == 'ubuntu-26.04'
+        run: |
+          sudo apt-get install -y meson ninja-build patch wayland-protocols libdrm-dev
+          python3 scripts/test_wayland_runtime.py
+          # Regenerate this CI artifact instead of restoring native code from an older source patch.
+          rm -rf target/debug/openwall-runtime
+          python3 scripts/build_wayland_runtime.py
+          python3 scripts/test_wayland_runtime.py --expect-bundled
       - name: GPU conformance using software Vulkan
         if: runner.os == 'Linux'
         env:
@@ -65,8 +84,12 @@ jobs:
       - name: Windowless video transfer probe
         if: runner.os == 'Linux'
         run: |
+          cargo test -p openwall --example video_transfer_probe --locked
           cargo build -p openwall --example video_transfer_probe --locked
           /usr/bin/python3 scripts/test_video_transfer_probe.py --software-gl --video-fixture /tmp/openwall-loop.webm
+      - name: SDR video conversion regressions
+        if: runner.os == 'Linux'
+        run: /usr/bin/python3 scripts/test_video_color.py --software-gl
       - name: GUI startup
         env:
           QT_QPA_PLATFORM: offscreen

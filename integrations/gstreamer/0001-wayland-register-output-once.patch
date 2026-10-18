@@ -1,0 +1,33 @@
+SPDX-License-Identifier: LGPL-2.1-or-later
+From: OpenWall contributors
+Subject: [PATCH] wayland: register an output only on its first done event
+
+GstWlOutput already receives updated geometry, mode and scale in place.
+Only its first done event transfers ownership into the display's output
+table. Later done events have no display registration data left; using
+that NULL pointer crashes on output changes. Registering the same object
+again would also unref the table's existing ownership of that object.
+
+This patch modifies LGPL-2.1-or-later GStreamer source.
+
+--- a/gst-libs/gst/wayland/gstwldisplay.c
++++ b/gst-libs/gst/wayland/gstwldisplay.c
+@@ -431,8 +431,16 @@
+ {
+   GstWlOutput *output = GST_WL_OUTPUT (data);
+   GstWlDisplay *self = g_object_steal_data (G_OBJECT (output), "display");
+-  GstWlDisplayPrivate *priv = gst_wl_display_get_instance_private (self);
+-  const gchar *name = gst_wl_output_get_name (output);
++  GstWlDisplayPrivate *priv;
++  const gchar *name;
++
++  /* Only the first done event registers the output. Later events update the
++   * same object, whose ownership has already passed to the output table. */
++  if (!self)
++    return;
++
++  priv = gst_wl_display_get_instance_private (self);
++  name = gst_wl_output_get_name (output);
+ 
+   GST_INFO ("Adding output %s (%p):", name, wl_output);
+   GST_INFO ("  Make:       %s", gst_wl_output_get_make (output));

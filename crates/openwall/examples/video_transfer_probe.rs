@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Windowless M0 transfer diagnostic, not a wallpaper presenter or energy benchmark.
 #[cfg(all(target_os = "linux", feature = "video"))]
+#[path = "video_transfer_probe/capture.rs"]
+mod capture;
+
+#[cfg(all(target_os = "linux", feature = "video"))]
 mod probe {
+    use super::capture::CapturedFrame;
     use anyhow::{Context, Result, bail, ensure};
     use clap::{Parser, ValueEnum};
     use gstreamer::{self as gst, glib, prelude::*};
@@ -33,6 +38,9 @@ mod probe {
         seconds: u64,
         #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(0..=300))]
         warmup: u64,
+        /// Save the first CPU-visible frame as PNG after playback stops; never overwrite a file.
+        #[arg(long)]
+        first_frame: Option<PathBuf>,
     }
 
     #[derive(Serialize)]
@@ -52,10 +60,12 @@ mod probe {
         frames: u64,
         bytes: u64,
         error: Option<String>,
+        capture: bool,
+        first_frame: Option<CapturedFrame>,
     }
 
     impl Consumer {
-        fn copy(&mut self, buffer: &gst::BufferRef) -> Result<()> {
+        fn copy(&mut self, buffer: &gst::BufferRef, pad: &gst::Pad) -> Result<()> {
             ensure!(
                 buffer.size() > 0 && buffer.size() <= 256 * 1024 * 1024,
                 "CPU consumer buffer exceeds limits"
@@ -77,6 +87,11 @@ mod probe {
             std::hint::black_box(&self.scratch);
             self.frames += 1;
             self.bytes += data.len() as u64;
+            drop(mapped);
+            if self.capture && self.first_frame.is_none() {
+                let caps = pad.current_caps().context("capture pad has no caps")?;
+                self.first_frame = Some(CapturedFrame::read(buffer, &caps)?);
+            }
             Ok(())
         }
     }
@@ -122,6 +137,10 @@ mod probe {
 
     pub fn run() -> Result<()> {
         let args = Args::parse();
+        ensure!(
+            args.first_frame.is_none() || !matches!(args.mode, Mode::Dmabuf),
+            "--first-frame cannot map an unmapped DMA-BUF probe"
+        );
         if !matches!(args.mode, Mode::Cpu) {
             ensure!(
                 std::env::var("GST_GL_WINDOW").as_deref() == Ok("surfaceless"),
@@ -198,7 +217,10 @@ mod probe {
                     gst::PadProbeReturn::Remove
                 },
             );
-        let consumer = Arc::new(Mutex::new(Consumer::default()));
+        let consumer = Arc::new(Mutex::new(Consumer {
+            capture: args.first_frame.is_some(),
+            ..Consumer::default()
+        }));
         if !matches!(args.mode, Mode::Dmabuf) {
             let consume = consumer.clone();
             let consume_bus = bus.clone();
@@ -206,7 +228,7 @@ mod probe {
                 .context("fake sink has no pad")?
                 .add_probe(
                     gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
-                    move |_, info| {
+                    move |pad, info| {
                         let failed = {
                             let Ok(mut state) = consume.lock() else {
                                 wake(&consume_bus);
@@ -216,9 +238,9 @@ mod probe {
                                 return gst::PadProbeReturn::Drop;
                             }
                             let result = if let Some(buffer) = info.buffer() {
-                                state.copy(buffer)
+                                state.copy(buffer, pad)
                             } else if let Some(list) = info.buffer_list() {
-                                list.iter().try_for_each(|buffer| state.copy(buffer))
+                                list.iter().try_for_each(|buffer| state.copy(buffer, pad))
                             } else {
                                 Ok(())
                             };
@@ -357,6 +379,13 @@ mod probe {
             "total_frames_copied": consumer.frames,
             "total_bytes_copied": consumer.bytes,
         });
+        if let Some(path) = args.first_frame {
+            result["first_frame_capture"] = consumer
+                .first_frame
+                .as_ref()
+                .context("no CPU frame was captured")?
+                .write_png(&path)?;
+        }
         println!("{}", serde_json::to_string_pretty(&result)?);
         Ok(())
     }
