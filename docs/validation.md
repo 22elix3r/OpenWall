@@ -182,6 +182,13 @@ do not qualify physical hardware or replace the remaining support gates.
 
 ## Required before support claims
 
+The optional [staged EGL diagnostic](staged-egl-probe.md) now holds static native child
+buffers, including resize priming swaps, behind an uncommitted parent. Private tests
+require presentation feedback and real click-through after publication, unchanged sampled
+pixels before publication, cancellation/crash cleanup and bounded control messages. Both
+GL APIs are exercised on Mesa and explicitly selected NVIDIA hardware. This does not yet
+provide transactional video or worker apply; physical scanout remains unqualified.
+
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,
   Finder icons, fullscreen behavior and native app activation.
 - Multiple monitors, fractional/mixed scaling, output rotations, mixed refresh,

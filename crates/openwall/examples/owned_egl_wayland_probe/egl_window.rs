@@ -255,7 +255,13 @@ impl Window {
         Ok(())
     }
 
+    #[allow(dead_code)] // Staged publication separates painting from submission.
     pub fn draw(&mut self, width: u32, height: u32) -> Result<()> {
+        self.paint(width, height)?;
+        self.present()
+    }
+
+    pub fn paint(&self, width: u32, height: u32) -> Result<()> {
         self.resize(width, height)?;
         let gl = self.gl()?;
         // SAFETY: only this thread uses the current context; dimensions are bounded.
@@ -287,7 +293,27 @@ impl Window {
                 "owned Wayland GL draw failed"
             );
         }
-        self.present()
+        Ok(())
+    }
+
+    #[allow(dead_code)] // The staged-child diagnostic must swap while unpublished.
+    pub fn disable_swap_throttle(&self) -> Result<()> {
+        self.activate()?;
+        ensure!(
+            self.session.api.get_config_attrib(
+                self.session.display,
+                self.session.config.context("EGL config missing")?,
+                egl::MIN_SWAP_INTERVAL
+            )? == 0,
+            "staged EGL drawing requires a zero minimum swap interval"
+        );
+        self.session.api.swap_interval(self.session.display, 0)?;
+        Ok(())
+    }
+
+    #[allow(dead_code)] // Staging chooses feedback only for a corrected buffer.
+    pub fn refresh_required(&self) -> bool {
+        self.refresh_after_swap.get()
     }
 
     pub fn resize(&self, width: u32, height: u32) -> Result<()> {
