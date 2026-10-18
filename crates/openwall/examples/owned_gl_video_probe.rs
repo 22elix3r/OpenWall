@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Single-frame shared-texture proof. Never presents a desktop surface.
+//! Bounded shared-texture and fence proof. Never presents a desktop surface.
 #[cfg(all(target_os = "linux", feature = "video-gl-probe"))]
 #[path = "owned_gl_video_probe/probe.rs"]
 mod probe;
