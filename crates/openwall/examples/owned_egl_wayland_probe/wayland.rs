@@ -5,7 +5,7 @@ use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop,
     protocol::{
         wl_buffer, wl_compositor, wl_output, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm,
-        wl_shm_pool, wl_surface,
+        wl_shm_pool, wl_subcompositor, wl_subsurface, wl_surface,
     },
 };
 use wayland_protocols::{
@@ -24,6 +24,11 @@ use wayland_protocols_wlr::{
 pub(super) struct State {
     pub secondary: Option<SecondarySurface>,
     pub surface: Option<wl_surface::WlSurface>,
+    child: Option<wl_surface::WlSurface>,
+    child_role: Option<wl_subsurface::WlSubsurface>,
+    staging_viewport: Option<wp_viewport::WpViewport>,
+    staging_buffer: Option<wl_buffer::WlBuffer>,
+    staging_published: bool,
     layer: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     witness: Option<wl_surface::WlSurface>,
     witness_role: Option<xdg_surface::XdgSurface>,
@@ -33,6 +38,7 @@ pub(super) struct State {
     witness_size: (i32, i32),
     witness_mapped: bool,
     compositor: Option<wl_compositor::WlCompositor>,
+    subcompositor: Option<wl_subcompositor::WlSubcompositor>,
     shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     xdg: Option<xdg_wm_base::XdgWmBase>,
     shm: Option<wl_shm::WlShm>,
@@ -165,6 +171,90 @@ pub(super) fn connect(
 }
 
 impl State {
+    #[allow(dead_code)] // Explicit staged-child mode; normal probes keep their root.
+    pub fn enable_staging(&mut self, qh: &QueueHandle<Self>, intercept: bool) -> Result<()> {
+        ensure!(self.child.is_none(), "staged native child already exists");
+        let compositor = self.compositor.as_ref().context("compositor missing")?;
+        let root = self.surface.as_ref().context("root surface missing")?;
+        let child = compositor.create_surface(qh, ());
+        if !intercept {
+            let region = compositor.create_region(qh, ());
+            child.set_input_region(Some(&region));
+            region.destroy();
+        }
+        let role = self
+            .subcompositor
+            .as_ref()
+            .context("subcompositor missing")?
+            .get_subsurface(&child, root, qh, ());
+        role.set_sync();
+        role.set_position(0, 0);
+        self.staging_viewport = Some(
+            self.viewporter
+                .as_ref()
+                .context("viewporter missing")?
+                .get_viewport(root, qh, ()),
+        );
+        let fd =
+            rustix::fs::memfd_create(c"openwall-staging-root", rustix::fs::MemfdFlags::CLOEXEC)?;
+        let mut file = std::fs::File::from(fd);
+        file.write_all(&0u32.to_ne_bytes())?;
+        let pool = self
+            .shm
+            .as_ref()
+            .context("SHM missing")?
+            .create_pool(file.as_fd(), 4, qh, ());
+        self.staging_buffer =
+            Some(pool.create_buffer(0, 1, 1, 4, wl_shm::Format::Argb8888, qh, ()));
+        pool.destroy();
+        self.child = Some(child);
+        self.child_role = Some(role);
+        Ok(())
+    }
+
+    pub fn render_surface(&self) -> Result<&wl_surface::WlSurface> {
+        self.child
+            .as_ref()
+            .or(self.surface.as_ref())
+            .context("native surface missing")
+    }
+
+    #[allow(dead_code)] // Advance hidden child state without mapping its parent.
+    pub fn flush_staged(&self) -> Result<()> {
+        ensure!(
+            self.child.is_some() && !self.staging_published,
+            "staged parent must remain unmapped"
+        );
+        // Older wlroots applies cached commits individually and presentation
+        // feedback is not part of that cache. Drain priming commits without any
+        // feedback while the parent still has no attached buffer.
+        self.surface.as_ref().context("root missing")?.commit();
+        Ok(())
+    }
+
+    #[allow(dead_code)] // Only staged mode controls the transparent parent commit.
+    pub fn publish_staged(&mut self) -> Result<()> {
+        ensure!(self.child.is_some(), "staged native child missing");
+        let (width, height) = self.configured.context("layer configure missing")?;
+        ensure!(
+            width > 0
+                && height > 0
+                && width <= 16_384
+                && height <= 16_384
+                && u64::from(width) * u64::from(height) * 4 <= 256 * 1024 * 1024,
+            "staged geometry exceeds limits"
+        );
+        let root = self.surface.as_ref().context("root missing")?;
+        self.staging_viewport
+            .as_ref()
+            .context("root viewport missing")?
+            .set_destination(width as i32, height as i32);
+        root.attach(self.staging_buffer.as_ref(), 0, 0);
+        root.damage_buffer(0, 0, 1, 1);
+        root.commit();
+        self.staging_published = true;
+        Ok(())
+    }
     #[allow(dead_code)] // Only the shared-session diagnostic creates a second root.
     pub fn add_secondary(&mut self, output: &str, qh: &QueueHandle<Self>) -> Result<()> {
         ensure!(
@@ -237,6 +327,7 @@ impl State {
         secondary.pending_feedback = true;
         Ok(())
     }
+    #[allow(dead_code)] // Video and staged diagnostics label their final buffers.
     pub fn request_feedback(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
         self.request_frame_feedback(qh, 0)
     }
@@ -245,11 +336,7 @@ impl State {
         self.presentation
             .as_ref()
             .context("presentation feedback missing")?
-            .feedback(
-                self.surface.as_ref().context("EGL surface missing")?,
-                qh,
-                frame_id,
-            );
+            .feedback(self.render_surface()?, qh, frame_id);
         self.pending_feedback = true;
         Ok(())
     }
@@ -282,6 +369,18 @@ impl Drop for State {
     fn drop(&mut self) {
         // Caller drops EGLSurface and wl_egl_window before destroying these roots.
         self.secondary.take();
+        if let Some(role) = self.child_role.take() {
+            role.destroy();
+        }
+        if let Some(surface) = self.child.take() {
+            surface.destroy();
+        }
+        if let Some(viewport) = self.staging_viewport.take() {
+            viewport.destroy();
+        }
+        if let Some(buffer) = self.staging_buffer.take() {
+            buffer.destroy();
+        }
         if let Some(pointer) = self.virtual_pointer.take() {
             pointer.destroy();
         }
@@ -393,6 +492,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     state.compositor = Some(registry.bind(name, version.min(4), qh, ()))
                 }
                 "wl_shm" => state.shm = Some(registry.bind(name, 1, qh, ())),
+                "wl_subcompositor" => state.subcompositor = Some(registry.bind(name, 1, qh, ())),
                 "wl_seat" if state.seat.is_none() && version >= 5 => {
                     state.seat = Some(registry.bind(name, version.min(7), qh, ()))
                 }
@@ -558,7 +658,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                 if state.pointer_focus == state.witness {
                     state.witness_buttons += 1;
                 }
-                if state.pointer_focus == state.surface {
+                if state.pointer_focus == state.surface
+                    || state.child.is_some() && state.pointer_focus == state.child
+                {
                     state.intercepted = true;
                 }
             }
@@ -600,6 +702,8 @@ delegate_noop!(State: ignore wl_region::WlRegion);
 delegate_noop!(State: ignore wl_surface::WlSurface);
 delegate_noop!(State: ignore wl_shm::WlShm);
 delegate_noop!(State: ignore wl_shm_pool::WlShmPool);
+delegate_noop!(State: ignore wl_subcompositor::WlSubcompositor);
+delegate_noop!(State: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(State: ignore wl_buffer::WlBuffer);
 delegate_noop!(State: ignore wp_viewport::WpViewport);
 delegate_noop!(State: ignore wp_viewporter::WpViewporter);
