@@ -79,10 +79,14 @@ fn execute() -> Result<()> {
             };
             #[cfg(not(target_os = "linux"))]
             let desktop = serde_json::json!({"backend":std::env::consts::OS, "hardware_qualification":"pending"});
+            #[cfg(all(target_os = "linux", feature = "video"))]
+            let linux_video = video::wayland_runtime_report();
+            #[cfg(not(all(target_os = "linux", feature = "video")))]
+            let linux_video = serde_json::Value::Null;
             println!(
                 "{}",
                 serde_json::to_string_pretty(
-                    &serde_json::json!({"version":env!("CARGO_PKG_VERSION"), "desktop":desktop, "scene_support":"static 2D image layers; original sprite shader", "proprietary_engine_required":false, "static_scene_redraw":"on change only"})
+                    &serde_json::json!({"version":env!("CARGO_PKG_VERSION"), "desktop":desktop, "linux_video":linux_video, "scene_support":"static 2D image layers; original sprite shader", "proprietary_engine_required":false, "static_scene_redraw":"on change only"})
                 )?
             );
         }
@@ -179,6 +183,12 @@ fn play_video(
 ) -> Result<()> {
     #[cfg(all(target_os = "linux", feature = "video"))]
     {
+        if desktop
+            || std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var_os("WAYLAND_SOCKET").is_some()
+        {
+            video::prepare_wayland_runtime()?;
+        }
         if desktop {
             wayland::run_video(path, output, duration)
         } else if std::env::var_os("WAYLAND_DISPLAY").is_some()

@@ -48,6 +48,11 @@ Use a current stable Rust toolchain. The GUI needs Qt 6.4+ development tools and
 modules; the local build has been tested with Qt 6.10.3. The background worker does not
 load Qt. Linux also needs Wayland, Vulkan, and GStreamer development libraries.
 
+GStreamer 1.28.0–1.28.8 need the [app-local Wayland helper](integrations/gstreamer/README.md)
+to avoid an upstream crash on monitor changes. Build it after the worker on Ubuntu 26.04
+and other affected hosts. It includes the source and patch and changes no system library;
+1.24/1.26 use the normal system runtime.
+
 Ubuntu/Debian:
 
 ```sh

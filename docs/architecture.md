@@ -39,6 +39,14 @@ rather than periodic polling. Resize briefly synchronizes the container with its
 then resumes independently paced playback without restarting the decoder. Preview on X11
 still uses GStreamer's automatic window; this does not provide X11 desktop integration.
 
+GStreamer 1.28's output-registration callback has an upstream crash on repeated output
+notifications. The [app-local helper](../integrations/gstreamer/README.md) keeps its
+LGPL source and a minimal patch alongside the worker, loaded before plugin initialization
+and retained for the process lifetime. Without that helper, known affected native
+runtimes fail before desktop surface creation. Older 1.24/1.26 paths use the system
+helper. This scoped dependency fix does not change codecs, driver selection, environment
+variables or the scene renderer.
+
 Wayland surface-local dimensions and physical buffer dimensions are separate. The
 `wp_fractional_scale_v1` preference uses units of 1/120; buffers round to physical
 pixels while `wp_viewport` keeps the logical destination and `wl_surface` buffer scale
