@@ -60,8 +60,41 @@ and an opaque-input negative control. Screenshots come from the external composi
 capture tool; the application itself performs no readback. Software CI runs both APIs;
 Ubuntu 24.04 checks rejection of its older GStreamer before any display connection.
 
+## Explicit NVIDIA hardware qualification
+
+```sh
+python3 scripts/test_native_gl_video.py --nvidia
+# For multiple NVIDIA GPUs, select the existing render node explicitly:
+python3 scripts/test_native_gl_video.py --nvidia --render-node /dev/dri/renderD129
+```
+
+This opt-in mode requires an existing NVIDIA driver, EGL configuration, `nvvp9dec`,
+Sway and capture tools. It installs no drivers and bundles no vendor runtime. It selects
+an NVIDIA DRM render node for the private headless compositor, checks the node's sysfs
+vendor/driver, and forces that EGL vendor for the compositor and client. The compositor
+still uses `WLR_BACKENDS=headless`, a private runtime directory/socket, no desktop display
+or session bus, and virtual input only. Its debug log must identify NVIDIA and the selected
+render node. Hardware qualification is outside software CI and must be requested with
+`--nvidia`; the normal test retains the software compositor and decoder.
+
+The original fixtures are doubled to 260×136 without changing their YUV values to meet
+NVDEC's minimum dimensions. The native and windowless diagnostics share one-shot bounded
+decoder-buffer tracing. NVIDIA qualification requires `nvvp9dec`, actual GL memory at its
+source pad, an explicit GL-memory contract, a positive native GL-selection log and no
+native system-fallback warning. This remains source/log-based evidence rather than a
+CUDA API trace or proof of zero copies. The consumer's GL output caps alone do not establish
+the decoder's transfer path.
+
+On 2026-10-18, Fedora 43, Sway 1.11/wlroots 0.19.3, GStreamer 1.26.11 and an RTX 4070 Ti
+SUPER with NVIDIA 580.178.04 passed the full native suite using core GL 3.3. All twelve
+visible markers matched the independent reference with zero sampled channel error. The
+run completed two loops and 29 labelled presentations, retired all 29 consumer fences
+without normal-path `glFinish`, and passed the same resize/input/error/crash cleanup checks.
+This demonstrates this driver/compositor combination in a headless session. Physical
+monitor presentation, desktop shell behavior, sustained performance and power remain open.
+
 This is a finite single-output proof with stretched SDR frames and logical-size buffers.
-It does not establish physical GPU/compositor import, sustained playback, power savings,
+It does not establish general GPU/compositor compatibility, sustained playback, power savings,
 aspect/fit policy, full-resolution HiDPI rendering, display color management, HDR, dynamic
 formats, other desktop environments, multi-output presentation or macOS behavior.
 The native window owner must not be duplicated per output on a common Wayland connection:
