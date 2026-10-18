@@ -22,7 +22,10 @@ physical buffer sizing, video resize without decoder replacement, and a private 
 Sway regression suite now cover mixed scales, rotation, newly connected outputs, complete
 output disable/enable, selected-output placement, static idle behavior, worker crashes,
 and compositor loss. An experimental Plasma wallpaper item can present an external
-Rust/GStreamer worker in a private nested Plasma 6 session. Connection discovery,
-GPU-resident buffer sharing and real desktop lifecycle qualification remain open.
+Rust/GStreamer worker in a private nested Plasma 6 session. A GNOME 49 background probe
+validates connection-owned window cloning, moving video and bounded worker cleanup.
+Its normal application/window roles and native video configure handling remain open.
+Connection discovery, GPU-resident buffer sharing and real desktop lifecycle qualification
+remain open.
 These automated protocol/pixel checks do not qualify physical monitor hot-plug,
 suspend/resume, energy use, macOS, GNOME or general Plasma support.

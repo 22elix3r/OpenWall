@@ -185,7 +185,7 @@ fn run_content(
     });
     anyhow::ensure!(
         !shell_owned,
-        "{desktop} requires a dedicated desktop integration, which is not implemented yet; creating an invisible background surface would not apply the wallpaper"
+        "{desktop} requires a dedicated desktop integration; the experimental adapters are not connected to Apply yet"
     );
     #[cfg(not(feature = "video"))]
     let _ = &video_path;
@@ -194,7 +194,7 @@ fn run_content(
         .compositor
         .clone()
         .context("compositor is missing wl_compositor")?;
-    let shell = state.shell.clone().context("this compositor has no layer-shell; GNOME and Plasma require dedicated integrations (not implemented yet)")?;
+    let shell = state.shell.clone().context("this compositor has no layer-shell; GNOME and Plasma require desktop adapters (Apply integration pending)")?;
     if let Some(name) = &output
         && !state.outputs.values().any(|x| &x.info.name == name)
     {

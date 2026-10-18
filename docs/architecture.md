@@ -80,6 +80,15 @@ a static fallback and permits reconnection. This prototype uses test-only discov
 is not connected to Apply. Shared-memory correctness has been tested; efficient hardware
 buffer import and a versioned/authorized connection handshake remain open.
 
+The [GNOME presentation probe](../integrations/gnome/README.md) uses a dedicated
+`Meta.WaylandClient` connection and a native `Clutter.Clone` inside the desktop's
+background actor. Ownership is determined by the connection; unrelated windows with
+matching titles are preserved. Worker logs, startup and stop waits are bounded, and
+source/clone teardown is tied to the specific worker instance. It does not install
+shell-method overrides or provide finished app-list/workspace roles. The probe exposes
+the remaining need for OpenWall-owned XDG video parents instead of the automatic
+GStreamer toplevel path. Normal GNOME Apply remains guarded.
+
 ## Compatibility boundaries
 
 The parser dependency is pinned in Cargo.toml/Cargo.lock. OpenWall currently maps only

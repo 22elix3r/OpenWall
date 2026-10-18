@@ -71,7 +71,7 @@ fn execute() -> Result<()> {
             #[cfg(target_os = "linux")]
             let desktop = match wayland::displays() {
                 Ok((outputs, supported)) => {
-                    serde_json::json!({"backend":"wayland", "outputs":outputs, "layer_shell":supported, "gnome_plugin":"not implemented", "plasma_plugin":"experimental presentation bridge; Apply not connected"})
+                    serde_json::json!({"backend":"wayland", "outputs":outputs, "layer_shell":supported, "gnome_plugin":"experimental background probe; Apply not connected", "plasma_plugin":"experimental presentation bridge; Apply not connected"})
                 }
                 Err(error) => {
                     serde_json::json!({"backend":"unavailable", "reason":error.to_string()})

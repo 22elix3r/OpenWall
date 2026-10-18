@@ -34,7 +34,9 @@ and worker/compositor crash cleanup using actual displayed pixels.
 
 An [experimental Plasma 6 presentation shim](integrations/plasma/README.md) hosts external
 workers under desktop widgets; its private-session tests do not yet qualify normal
-GUI/CLI application on Plasma. GNOME still requires its own integration.
+GUI/CLI application on Plasma. A separate [GNOME background probe](integrations/gnome/README.md)
+validates worker presentation and cleanup in a private GNOME 49 session; it is not yet
+an installable desktop integration.
 There is no X11 desktop backend yet. macOS currently applies to one selected/default
 monitor. Linux video currently creates a decoder for each output. SceneScript, custom
 effects, particles, web wallpapers, persistent libraries, discovery, and power rules

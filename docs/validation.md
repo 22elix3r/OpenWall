@@ -127,13 +127,45 @@ real configuration-dialog lifecycle, screen lock or activity switching is qualif
 Normal GUI/CLI Apply on Plasma remains unavailable until its connection/lifecycle
 contract is implemented and validated.
 
+## Isolated GNOME background probe: 2026-10-18
+
+GNOME Shell 49.10 / Mutter 49.8 / GJS 1.86.0, extracted from Fedora packages, passed
+the actual repository presentation module in a private headless shell. Scene rendering
+used lavapipe; bubblewrap hid GPU nodes so Mutter used its surfaceless renderer. A
+read-only host filesystem, private XDG state, memory-only GSettings and private D-Bus
+session kept the running desktop and real OS-service buses out of the test.
+
+- Exact quadrant pixels under GNOME's native panel from a minimized, connection-owned
+  Rust source window; an identically titled unrelated preview remained unmanaged.
+- Graceful stop/fallback, mapped-worker crash, reconnect, presentation actor loss,
+  superseded startup and stop during startup.
+- A 256 KiB noisy worker was drained into bounded diagnostics. A worker ignoring SIGINT
+  and never mapping was forcibly reaped after its startup deadline.
+- Moving GStreamer VP9 video through a background clone, at least two loops, and no
+  scene-GPU initialization. A software plugin set excluded host GPU-driver probing.
+- A worker outside the test PID namespace failed promptly when its compositor died.
+
+The launcher must explicitly close its retained copy of the Wayland socket peer after
+spawning; waiting for garbage collection delays EOF and window cleanup. The test also
+exposed GJS's unsupported streaming TextDecoder option and background-manager replacement
+during shell startup. The probe now uses bounded non-streaming diagnostics and resolves
+the background actor at map time, with worker cleanup if that actor disappears.
+
+Run `python3 scripts/test_gnome_headless.py` on a GNOME 49 test host; see the
+[runtime requirements and boundaries](../integrations/gnome/README.md). This test is
+opt-in; hosted CI syntax checks do not qualify GNOME behavior. The automatic GStreamer
+window path still emits Mutter's initial configure warning, and normal app-list/overview
+roles, monitor/session transitions and hardware rendering remain unqualified. Normal
+GNOME Apply is still unavailable. These results establish presentation feasibility.
+
 ## Required before support claims
 
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,
   Finder icons, fullscreen behavior and native app activation.
 - Multiple monitors, fractional/mixed scaling, output rotations, mixed refresh,
   hot-plug and display sleep/wake.
-- GNOME integration proof and GNOME/Plasma version-specific lifecycle testing.
+- GNOME/Plasma native app/window roles, qualified video paths and version-specific
+  monitor/session lifecycle testing beyond the isolated presentation probes.
 - Driver/device combinations, external-memory synchronization and failure recovery.
 - Playback power/visibility policy, GPU device loss and bounded worker restarts.
 - Screen readers, keyboard navigation and reduced motion.
