@@ -108,3 +108,6 @@ boundary can differ by an in-flight frame. The measurements exclude compositor C
 work/energy, desktop roles and physical scanout. Driver/GStreamer pools and diagnostic
 validation/logging are included in the video process. Headless runs cannot establish
 wallpaper power use or be directly compared with the earlier desktop/sink benchmarks.
+
+The [2026-10-19 native GL release observations](native-gl-baseline-2026-10-19.md) record
+three private 1080p30 NVIDIA trials, exact source/binary/media provenance and scope limits.
