@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #[path = "../probe_support/gl_api.rs"]
 mod gl_api;
+#[path = "../probe_support/gl_painter.rs"]
+mod gl_painter;
+#[path = "../probe_support/shared_gl.rs"]
+mod shared_gl;
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use gl_api::Api;
@@ -9,12 +13,12 @@ use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_gl::{self as gst_gl, prelude::*};
 use image::ImageEncoder;
 use khronos_egl as egl;
+use shared_gl::{Lease, retire_one, source};
 use std::{
     cell::Cell,
     collections::{BTreeMap, VecDeque},
     fs::OpenOptions,
     marker::PhantomData,
-    num::NonZeroU32,
     path::PathBuf,
     rc::Rc,
     sync::{
@@ -150,9 +154,7 @@ struct Target<'a> {
     frames: u16,
     texture: Option<glow::NativeTexture>,
     framebuffer: Option<glow::NativeFramebuffer>,
-    sampler: Option<glow::NativeSampler>,
-    program: Option<glow::NativeProgram>,
-    vertex_array: Option<glow::NativeVertexArray>,
+    painter: gl_painter::Painter<'a>,
 }
 
 impl Drop for Target<'_> {
@@ -161,15 +163,6 @@ impl Drop for Target<'_> {
         // Source leases separately retain samples until their GPU fences signal.
         // GL retains resources referenced by commands queued before deletion.
         unsafe {
-            if let Some(value) = self.vertex_array.take() {
-                self.gl.delete_vertex_array(value);
-            }
-            if let Some(value) = self.program.take() {
-                self.gl.delete_program(value);
-            }
-            if let Some(value) = self.sampler.take() {
-                self.gl.delete_sampler(value);
-            }
             if let Some(value) = self.framebuffer.take() {
                 self.gl.delete_framebuffer(value);
             }
@@ -177,21 +170,6 @@ impl Drop for Target<'_> {
                 self.gl.delete_texture(value);
             }
         }
-    }
-}
-
-fn shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::NativeShader> {
-    // SAFETY: the native context is current; shader strings are fixed repository code.
-    unsafe {
-        let shader = gl.create_shader(kind).map_err(anyhow::Error::msg)?;
-        gl.shader_source(shader, source);
-        gl.compile_shader(shader);
-        if !gl.get_shader_compile_status(shader) {
-            let error = gl.get_shader_info_log(shader);
-            gl.delete_shader(shader);
-            bail!("owned shader compile failed: {error}");
-        }
-        Ok(shader)
     }
 }
 
@@ -216,9 +194,7 @@ impl<'a> Target<'a> {
             frames,
             texture: None,
             framebuffer: None,
-            sampler: None,
-            program: None,
-            vertex_array: None,
+            painter: gl_painter::Painter::new(gl, selected)?,
         };
         // SAFETY: context ownership is thread-local. Dimensions and texture names were
         // validated by the caller. Only application-owned objects are modified/deleted;
@@ -253,110 +229,23 @@ impl<'a> Target<'a> {
                 gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE,
                 "owned RGBA framebuffer is incomplete"
             );
-            let sampler = gl.create_sampler().map_err(anyhow::Error::msg)?;
-            target.sampler = Some(sampler);
-            for parameter in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
-                gl.sampler_parameter_i32(sampler, parameter, glow::LINEAR as i32);
-            }
-            for parameter in [glow::TEXTURE_WRAP_S, glow::TEXTURE_WRAP_T] {
-                gl.sampler_parameter_i32(sampler, parameter, glow::CLAMP_TO_EDGE as i32);
-            }
-            let program = gl.create_program().map_err(anyhow::Error::msg)?;
-            target.program = Some(program);
-            let header = match selected {
-                Api::Gles => "#version 300 es\nprecision highp float;",
-                Api::Desktop => "#version 330 core",
-            };
-            let vertex = shader(
-                gl,
-                glow::VERTEX_SHADER,
-                &r#"#version 300 es
-precision highp float;
-uniform vec2 source_scale;
-out vec2 uv;
-void main() {
-    vec2 p = vec2[](vec2(-1., -1.), vec2(3., -1.), vec2(-1., 3.))[gl_VertexID];
-    gl_Position = vec4(p, 0., 1.);
-    uv = vec2((p.x + 1.) * .5, (1. - p.y) * .5) * source_scale;
-}"#
-                .replacen("#version 300 es\nprecision highp float;", header, 1),
-            )?;
-            let fragment = match shader(
-                gl,
-                glow::FRAGMENT_SHADER,
-                &r#"#version 300 es
-precision highp float;
-uniform sampler2D source_texture;
-in vec2 uv;
-out vec4 color;
-void main() { color = texture(source_texture, uv); }
-"#
-                .replacen("#version 300 es\nprecision highp float;", header, 1),
-            ) {
-                Ok(value) => value,
-                Err(error) => {
-                    gl.delete_shader(vertex);
-                    return Err(error);
-                }
-            };
-            gl.attach_shader(program, vertex);
-            gl.attach_shader(program, fragment);
-            gl.link_program(program);
-            gl.detach_shader(program, vertex);
-            gl.detach_shader(program, fragment);
-            gl.delete_shader(vertex);
-            gl.delete_shader(fragment);
-            ensure!(
-                gl.get_program_link_status(program),
-                "owned shader link failed: {}",
-                gl.get_program_info_log(program)
-            );
-            let vao = gl.create_vertex_array().map_err(anyhow::Error::msg)?;
-            target.vertex_array = Some(vao);
-            gl.bind_vertex_array(Some(vao));
-            gl.use_program(Some(program));
-            gl.uniform_1_i32(
-                gl.get_uniform_location(program, "source_texture").as_ref(),
-                0,
-            );
-            ensure!(gl.get_error() == glow::NO_ERROR, "owned GL setup failed");
             Ok(target)
         }
     }
 
-    fn draw(
-        &self,
-        source: glow::NativeTexture,
-        texture_size: (i32, i32),
-        index: u16,
-    ) -> Result<()> {
+    fn draw(&self, source: &shared_gl::Source, index: u16) -> Result<()> {
         ensure!(index < self.frames, "atlas frame index is out of bounds");
-        let gl = self.gl;
-        // SAFETY: context is current; validated texture is retained by a source lease.
-        unsafe {
-            let program = self.program.context("owned program missing")?;
-            gl.bind_framebuffer(glow::FRAMEBUFFER, self.framebuffer);
-            gl.bind_vertex_array(self.vertex_array);
-            gl.use_program(Some(program));
-            gl.uniform_2_f32(
-                gl.get_uniform_location(program, "source_scale").as_ref(),
-                self.width as f32 / texture_size.0 as f32,
-                self.height as f32 / texture_size.1 as f32,
-            );
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(source));
-            gl.bind_sampler(0, self.sampler);
-            // Frame zero is at the top of the final PNG, despite GL's bottom-up coordinates.
-            gl.viewport(
+        // Frame zero is at the top of the PNG, despite GL's bottom-up coordinates.
+        self.painter.draw(
+            source,
+            self.framebuffer,
+            [
                 0,
-                ((self.frames - index - 1) as u32 * self.height) as i32,
-                self.width as i32,
-                self.height as i32,
-            );
-            gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            ensure!(gl.get_error() == glow::NO_ERROR, "owned GL draw failed");
-        }
-        Ok(())
+                (self.frames - index - 1) as u32 * self.height,
+                self.width,
+                self.height,
+            ],
+        )
     }
 
     fn readback(&self, first_only: bool) -> Result<Vec<u8>> {
@@ -404,102 +293,6 @@ void main() { color = texture(source_texture, uv); }
     }
 }
 
-// A sample must remain leased until the consumer's read commands have completed.
-// The guard also covers draw/fence failures before it can enter the bounded queue.
-struct Lease<'a> {
-    gl: &'a glow::Context,
-    sample: Option<gst::Sample>,
-    fence: Option<glow::NativeFence>,
-    pending: bool,
-    cleanup_finishes: &'a Cell<u32>,
-}
-
-impl Lease<'_> {
-    fn seal(&mut self) -> Result<()> {
-        // SAFETY: the owned context is current and the lease retains the source.
-        unsafe {
-            let fence = self
-                .gl
-                .fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0)
-                .map_err(anyhow::Error::msg)?;
-            ensure!(!fence.0.is_null(), "consumer fence creation returned null");
-            self.fence = Some(fence);
-            self.gl.flush();
-            ensure!(
-                self.gl.get_error() == glow::NO_ERROR,
-                "consumer fence submission failed"
-            );
-        }
-        Ok(())
-    }
-
-    fn poll(&mut self, wait: bool) -> Result<bool> {
-        let fence = self.fence.context("consumer fence is missing")?;
-        // SAFETY: this fence belongs to the current context, and has not been deleted.
-        let result = unsafe {
-            self.gl
-                .client_wait_sync(fence, 0, if wait { 1_000_000 } else { 0 })
-        };
-        match result {
-            glow::ALREADY_SIGNALED | glow::CONDITION_SATISFIED => {
-                // SAFETY: the completed fence is deleted once before releasing the sample.
-                unsafe { self.gl.delete_sync(fence) };
-                self.fence = None;
-                self.pending = false;
-                self.sample.take();
-                Ok(true)
-            }
-            glow::TIMEOUT_EXPIRED => Ok(false),
-            _ => bail!("consumer fence wait failed: {result:#x}"),
-        }
-    }
-}
-
-impl Drop for Lease<'_> {
-    fn drop(&mut self) {
-        // SAFETY: the creating context outlives every lease and is still current.
-        // Only an incomplete/error path finishes globally. Successful retirement
-        // deletes the fence and releases the sample without glFinish.
-        unsafe {
-            if self.pending {
-                self.gl.finish();
-                self.cleanup_finishes.set(self.cleanup_finishes.get() + 1);
-            }
-            if let Some(fence) = self.fence.take() {
-                self.gl.delete_sync(fence);
-            }
-        }
-    }
-}
-
-fn retire_one(
-    leases: &mut VecDeque<Lease<'_>>,
-    wait: bool,
-    interrupted: &AtomicBool,
-) -> Result<bool> {
-    let Some(first) = leases.front_mut() else {
-        return Ok(false);
-    };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        ensure!(
-            !interrupted.load(Ordering::Relaxed),
-            "owned GL probe interrupted"
-        );
-        if first.poll(wait)? {
-            leases.pop_front();
-            return Ok(true);
-        }
-        if !wait {
-            return Ok(false);
-        }
-        ensure!(
-            Instant::now() < deadline,
-            "consumer fence did not signal within five seconds"
-        );
-    }
-}
-
 fn pull_sample(
     sink: &gstreamer_app::AppSink,
     bus: &gst::Bus,
@@ -532,94 +325,6 @@ fn pull_sample(
             "no shared GL frame within 15 seconds"
         );
     }
-}
-
-struct Source {
-    width: u32,
-    height: u32,
-    texture: glow::NativeTexture,
-    texture_size: (i32, i32),
-    pts_ns: Option<u64>,
-    caps: String,
-    memory: serde_json::Value,
-}
-
-fn source(sample: &gst::Sample, wrapped: &gst_gl::GLContext, gl: &glow::Context) -> Result<Source> {
-    let caps = sample.caps().context("sample has no caps")?;
-    let info = gstreamer_video::VideoInfo::from_caps(caps)?;
-    let (width, height) = (info.width(), info.height());
-    ensure!(
-        info.format() == gstreamer_video::VideoFormat::Rgba && info.n_planes() == 1,
-        "proof supports one-plane RGBA only"
-    );
-    ensure!(
-        info.interlace_mode() == gstreamer_video::VideoInterlaceMode::Progressive
-            && matches!(
-                info.multiview_mode(),
-                gstreamer_video::VideoMultiviewMode::None
-                    | gstreamer_video::VideoMultiviewMode::Mono
-            ),
-        "proof supports progressive mono frames only"
-    );
-    ensure!(
-        width > 0
-            && height > 0
-            && width <= 16_384
-            && height <= 16_384
-            && width as usize * height as usize * 4 <= 256 * 1024 * 1024,
-        "frame dimensions exceed proof limits"
-    );
-    let buffer = sample.buffer().context("sample has no buffer")?;
-    ensure!(buffer.n_memory() == 1, "proof requires one GL memory block");
-    ensure!(
-        buffer
-            .meta::<gstreamer_video::VideoAffineTransformationMeta>()
-            .is_none(),
-        "affine metadata is not supported by this proof"
-    );
-    ensure!(
-        buffer.meta::<gstreamer_video::VideoCropMeta>().is_none(),
-        "crop metadata is not supported by this proof"
-    );
-    let memory = buffer
-        .peek_memory(0)
-        .downcast_memory_ref::<gst_gl::GLMemory>()
-        .context("sample memory is not a GL texture")?;
-    ensure!(
-        memory.texture_target() == gst_gl::GLTextureTarget::_2d,
-        "proof requires a 2D texture"
-    );
-    ensure!(
-        memory.context().can_share(wrapped),
-        "producer did not share the owned context"
-    );
-    let size = (memory.texture_width(), memory.texture_height());
-    ensure!(
-        size.0 >= width as i32 && size.1 >= height as i32 && size.0 <= 16_384 && size.1 <= 16_384,
-        "texture dimensions are invalid"
-    );
-    let sync = buffer
-        .meta::<gst_gl::GLSyncMeta>()
-        .context("producer provided no GL synchronization meta")?;
-    sync.wait(wrapped);
-    let texture =
-        glow::NativeTexture(NonZeroU32::new(memory.texture_id()).context("texture ID is zero")?);
-    // SAFETY: context is current; check before creating any of our own texture names.
-    ensure!(
-        unsafe { gl.is_texture(texture) },
-        "shared texture is not visible in the owned context"
-    );
-    Ok(Source {
-        width,
-        height,
-        texture,
-        texture_size: size,
-        pts_ns: buffer.pts().map(|pts| pts.nseconds()),
-        caps: caps.to_string(),
-        memory: serde_json::json!({"allocator_type":memory.allocator().map(|allocator|allocator.type_().name().to_owned()),
-            "texture_width":size.0,"texture_height":size.1,"texture_target":"2D","shared_context":true,
-            "producer_sync_meta":true}),
-    })
 }
 
 fn gst_api(selected: Api) -> gst_gl::GLAPI {
@@ -809,10 +514,11 @@ pub fn run() -> Result<()> {
             fence: None,
             pending: false,
             cleanup_finishes: &cleanup_finishes,
+            submitted_at: Instant::now(),
         };
         // The guard covers every return after a source-reading command may have been queued.
         lease.pending = true;
-        target.draw(source.texture, source.texture_size, index)?;
+        target.draw(&source, index)?;
         lease.seal()?;
         if index == 0 {
             rgba = target.readback(true)?;
