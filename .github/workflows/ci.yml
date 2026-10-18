@@ -43,7 +43,7 @@ jobs:
       - run: cargo fmt --all --check
       - name: Integration probe syntax
         run: |
-          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/test_video_transfer_probe.py scripts/test_video_color.py scripts/build_wayland_runtime.py scripts/test_wayland_runtime.py
+          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/test_video_transfer_probe.py scripts/test_video_color.py scripts/test_owned_gl_sequence.py scripts/build_wayland_runtime.py scripts/test_wayland_runtime.py
           node --input-type=module --check < integrations/gnome/presentation.js
       - name: Measurement harness process tests
         run: python3 -m unittest discover -s scripts/tests -v
@@ -98,6 +98,7 @@ jobs:
         run: |
           cargo build -p openwall --example owned_gl_video_probe --features video-gl-probe --locked
           /usr/bin/python3 scripts/test_video_color.py --software-gl --owned-gl-binary target/debug/examples/owned_gl_video_probe
+          /usr/bin/python3 scripts/test_owned_gl_sequence.py
       - name: Older GL runtime rejection
         if: matrix.os == 'ubuntu-24.04'
         run: |
