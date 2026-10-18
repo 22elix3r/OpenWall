@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+use glow::HasContext;
 use khronos_egl as egl;
 
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
@@ -9,6 +10,17 @@ pub enum Api {
 }
 
 impl Api {
+    pub fn select_default_draw_buffer(self, gl: &glow::Context) {
+        // SAFETY: diagnostics call this with the owned context current and its
+        // default window framebuffer bound. Surfaceless initialization can leave
+        // GL_NONE selected; window swaps need writes to the back buffer.
+        unsafe {
+            match self {
+                Self::Desktop => gl.draw_buffer(glow::BACK),
+                Self::Gles => gl.draw_buffers(&[glow::BACK]),
+            }
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Gles => "gles",

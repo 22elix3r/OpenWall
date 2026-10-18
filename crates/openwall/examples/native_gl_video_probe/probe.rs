@@ -15,11 +15,12 @@ mod shared_gl;
 #[allow(dead_code)] // The static diagnostic uses unlabelled feedback.
 mod wayland;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use gstreamer as gst;
 use gstreamer_gl::{self as gst_gl, prelude::*};
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
+#[path = "../probe_support/wayland_poll.rs"]
+mod wayland_poll;
 use std::{
     cell::Cell,
     collections::VecDeque,
@@ -32,6 +33,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use wayland_poll::wait;
 
 #[derive(Parser)]
 #[command(
@@ -56,42 +58,6 @@ impl Drop for Wrapped {
     fn drop(&mut self) {
         let _ = self.0.activate(false);
     }
-}
-
-fn wait(
-    queue: &mut wayland_client::EventQueue<wayland::State>,
-    connection: &wayland_client::Connection,
-    reader: &UnixStream,
-    deadline: Instant,
-) -> Result<()> {
-    connection.flush()?;
-    let Some(guard) = queue.prepare_read() else {
-        return Ok(());
-    };
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let timeout = Timespec {
-        tv_sec: remaining.as_secs() as i64,
-        tv_nsec: remaining.subsec_nanos() as i64,
-    };
-    let mut fds = [
-        PollFd::new(connection, PollFlags::IN),
-        PollFd::new(reader, PollFlags::IN),
-    ];
-    match poll(&mut fds, Some(&timeout)) {
-        Ok(_)
-            if fds[0]
-                .revents()
-                .intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL) =>
-        {
-            bail!("private Wayland compositor disconnected")
-        }
-        Ok(_) if fds[0].revents().contains(PollFlags::IN) => {
-            guard.read()?;
-        }
-        Ok(_) | Err(rustix::io::Errno::INTR) => drop(guard),
-        Err(error) => return Err(error.into()),
-    }
-    Ok(())
 }
 
 pub fn run() -> Result<()> {
@@ -130,14 +96,13 @@ pub fn run() -> Result<()> {
         }
     }
     let (width, height) = state.configured.context("layer configure missing")?;
-    // Single-output diagnostic: this owner terminates EGLDisplay. It must never
-    // be copied into independent per-output owners on one shared wl_display.
-    let window = egl_window::Window::new(
-        &connection,
+    // One session owns EGLDisplay/context; individual windows retain that session.
+    let native_session = egl_window::Session::new(&connection, args.gl_api)?;
+    let window = egl_window::Window::on_session(
+        native_session.clone(),
         state.surface.as_ref().context("surface missing")?,
         width,
         height,
-        args.gl_api,
     )?;
     let (native_display, native_context) = window.handles()?;
     // SAFETY: foreign display wrapper does not terminate EGLDisplay. Window owns
@@ -274,13 +239,15 @@ pub fn run() -> Result<()> {
                 let id = records.len() as u64 + 1;
                 state.request_frame_feedback(&queue.handle(), id)?;
                 window.present()?;
+                let geometry_refresh_required = window.take_refresh();
                 records.push(
                     serde_json::json!({"id":id,"pts_ns":source.pts_ns,"loop":completed_loops,
-                    "logical_size":[width,height],"texture_id":source.texture.0.get()}),
+                    "logical_size":[width,height],"texture_id":source.texture.0.get(),
+                    "geometry_refresh_required":geometry_refresh_required}),
                 );
                 leases.push_back(lease);
                 peak = peak.max(leases.len());
-                state.dirty = false;
+                state.dirty = geometry_refresh_required;
                 feedback_deadline = Some(Instant::now() + Duration::from_secs(5));
             }
         }
@@ -314,7 +281,8 @@ pub fn run() -> Result<()> {
         "probe stopped before actual presentation/input validation"
     );
     let (received, replaced) = media.counters()?;
-    let report = serde_json::json!({"schema_version":1,"status":"passed","scope":"shared_video_into_owned_private_wayland_surface",
+    let counts = window.counts();
+    let mut report = serde_json::json!({"schema_version":1,"status":"passed","scope":"shared_video_into_owned_private_wayland_surface",
         "gl":window.report()?,"gstreamer":gst::version_string().to_string(),"egl_context_creations":1,
         "input_region":"empty","witness_button_events":clicks,"frames":records,"presented_frame_ids":state.presented_frame_ids,
         "presented":state.presented,"discarded":state.discarded,"completed_loops":completed_loops,
@@ -330,6 +298,8 @@ pub fn run() -> Result<()> {
     drop(wrapped);
     drop(display);
     drop(window);
+    drop(native_session);
+    report["egl_lifecycle"] = counts.snapshot();
     drop(state);
     connection.flush()?;
     println!("{}", serde_json::to_string_pretty(&report)?);

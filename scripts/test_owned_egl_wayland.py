@@ -85,6 +85,8 @@ def main():
             report = json.loads(stdout)
             assert report["status"] == "passed" and report["scope"] == "owned_egl_surface_in_private_compositor", report
             assert report["egl_context_creations"] == 1 and report["presented"] >= 5, report
+            assert report["egl_lifecycle"] == {"display_initializations": 1, "context_creations": 1, "surface_creations": 1,
+                                               "surface_destructions": 1, "context_destructions": 1, "display_terminations": 1}, report
             assert report["witness_button_events"] >= clicks and report["input_region"] == "empty", report
             assert "llvmpipe" in report["gl"]["renderer"].lower(), report
             assert report["gl"]["api"] == args.gl_api, report

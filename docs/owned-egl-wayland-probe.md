@@ -60,9 +60,9 @@ Ubuntu releases; default/macOS builds
 compile an unavailable-platform fallback. This does not qualify physical hotplug,
 hardware drivers, native-resolution fractional rendering, GNOME/Plasma roles or macOS.
 The test overlay and input witness are not product UI or a production wallpaper role.
-This single-output diagnostic owns one EGL display/context. A multi-output presenter
-must share display ownership and destroy it only after all native surfaces and GL
-consumers have stopped; independent guards must not terminate a shared display.
+This single-output diagnostic now uses the [shared EGL session owner](shared-egl-session-probe.md).
+The two-output proof verifies that a surviving window retains its display/context after
+another disappears, with resource cleanup still possible after all native windows are gone.
 
 Both API profiles run through the native input/lifecycle suite. The separate
 [desktop GL interop checks](desktop-gl-video-interop.md) explain why decoder compatibility

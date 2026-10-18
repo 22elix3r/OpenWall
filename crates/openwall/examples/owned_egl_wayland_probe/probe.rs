@@ -104,12 +104,11 @@ pub fn run() -> Result<()> {
             let (width, height) = state.configured.context("layer configure missing")?;
             egl_window::validate_size(width, height)?;
             if window.is_none() {
-                window = Some(egl_window::Window::new(
-                    &conn,
+                window = Some(egl_window::Window::on_session(
+                    egl_window::Session::new(&conn, args.gl_api)?,
                     state.surface.as_ref().context("native surface missing")?,
                     width,
                     height,
-                    args.gl_api,
                 )?);
                 creations += 1;
             }
@@ -119,7 +118,10 @@ pub fn run() -> Result<()> {
                 .context("EGL window missing")?
                 .draw(width, height)?;
             draws += 1;
-            state.dirty = false;
+            state.dirty = window
+                .as_ref()
+                .context("EGL window missing")?
+                .take_refresh();
             feedback_deadline = Some(Instant::now() + Duration::from_secs(5));
             eprintln!("Owned EGL submitted {width}x{height}");
         }
@@ -163,13 +165,15 @@ pub fn run() -> Result<()> {
         }
     }
     ensure!(ready, "probe stopped before presentation/input validation");
-    let report = serde_json::json!({"schema_version":1,"status":"passed",
+    let counts = window.as_ref().context("EGL window missing")?.counts();
+    let mut report = serde_json::json!({"schema_version":1,"status":"passed",
         "scope":"owned_egl_surface_in_private_compositor","output":args.output,
         "egl_context_creations":creations,"draws":draws,"presented":state.presented,
         "discarded":state.discarded,"witness_button_events":state.witness_buttons,
         "input_region":"empty","logical_size":state.configured,
         "gl":window.as_ref().context("EGL window missing")?.report()?});
     drop(window);
+    report["egl_lifecycle"] = counts.snapshot();
     drop(state);
     conn.flush()?;
     println!("{}", serde_json::to_string_pretty(&report)?);
