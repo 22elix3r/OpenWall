@@ -143,7 +143,8 @@ class Session:
 
     def expect_log(self, child, log, text, after=0):
         def ready():
-            assert child.poll() is None, self.diagnostics()
+            status = child.poll()
+            assert status is None, f"Worker exited with status {status} while waiting for {text}\n{self.diagnostics()}"
             return text in self.text(log)[after:]
         wait_for(ready, text)
 

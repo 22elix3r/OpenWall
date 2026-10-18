@@ -58,7 +58,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=30 -t 2 -an -c:v libvpx-vp9 -b:v 400k /tmp/openwall-loop.webm
-          /usr/bin/python3 scripts/test_wayland_headless.py --software-vulkan --video-fixture /tmp/openwall-loop.webm
+          if [ "${{ matrix.os }}" = "ubuntu-26.04" ]; then
+            sudo apt-get install -y gdb
+            gdb --batch --return-child-result -ex 'set detach-on-fork off' -ex 'set schedule-multiple on' -ex 'handle SIGINT nostop noprint pass' -ex run -ex 'thread apply all bt' --args /usr/bin/python3 scripts/test_wayland_headless.py --software-vulkan --video-fixture /tmp/openwall-loop.webm
+          else
+            /usr/bin/python3 scripts/test_wayland_headless.py --software-vulkan --video-fixture /tmp/openwall-loop.webm
+          fi
       - name: External-process Plasma presentation bridge
         if: runner.os == 'Linux'
         run: /usr/bin/python3 scripts/test_plasma_bridge.py --video-fixture /tmp/openwall-loop.webm
