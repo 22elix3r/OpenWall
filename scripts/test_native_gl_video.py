@@ -7,12 +7,15 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import time
 
 from test_wayland_headless import Session, wait_for
 from private_gpu import nvidia_renderer
+from test_owned_egl_wayland import cpu_seconds
+from test_staged_egl import solid
 from video_color_fixtures import WIDTH, HEIGHT, patches, original_yuv, expected_rgba, enlarged_yuv
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +28,11 @@ def main():
     parser.add_argument("--gl-api", choices=["gles", "desktop"], default="desktop")
     parser.add_argument("--nvidia", action="store_true", help="explicitly enable NVIDIA decode/render in the private headless compositor")
     parser.add_argument("--render-node", type=Path, help="existing NVIDIA DRM render node; requires --nvidia")
+    parser.add_argument("--staged", action="store_true", help="preroll paused behind an unmapped parent before publishing")
+    parser.add_argument("--hold-seconds", type=float, default=1, help="staged preroll hold, 1–12 seconds")
     args = parser.parse_args()
+    if not 1 <= args.hold_seconds <= 12:
+        parser.error("--hold-seconds must be between 1 and 12")
     if args.nvidia and args.gl_api != "desktop":
         parser.error("NVIDIA GPU-path qualification requires --gl-api desktop")
     if args.render_node and not args.nvidia:
@@ -81,16 +88,20 @@ def main():
             baseline = wait_for(lambda: session.capture(first), "private compositor baseline").getpixel((10, 10))
             other = session.capture(second).tobytes()
             outputs = {}
+            controls = {}
 
             def spawn(path=video, extra=()):
                 log = (session.directory / f"native-{len(session.logs)}.log").open("w+")
                 session.logs.append(log)
                 output = (session.directory / f"native-{len(session.logs)}.json").open("w+")
                 session.logs.append(output)
-                child = subprocess.Popen([str(binary), str(path), "--output", first, "--gl-api", args.gl_api, *extra],
+                control = session.directory / f"native-{len(session.logs)}.sock"
+                staged_args = ["--staged-control", str(control)] if args.staged else []
+                child = subprocess.Popen([str(binary), str(path), "--output", first, "--gl-api", args.gl_api, *staged_args, *extra],
                                          env=session.env, stdout=output, stderr=log, text=True)
                 session.workers.append(child)
                 outputs[child.pid] = output
+                controls[child.pid] = control
                 return child, log
 
             def finish(child):
@@ -102,6 +113,24 @@ def main():
                 return image is not None and all(
                     max(abs(a - b) for a, b in zip(image.getpixel((int(image.width * x), int(image.height * y))), baseline)) <= 2
                     for x, y in [(.1, .25), (.7, .25), (.3, .75), (.9, .75)])
+
+            def staged(child, log):
+                session.expect_log(child, log, "Native GL video staged ")
+                def witness():
+                    assert child.poll() is None, session.diagnostics()
+                    image = session.capture(first)
+                    return image is not None and solid(image, (34, 34, 34))
+                wait_for(witness, "underlying witness while video is paused")
+
+            def publish(child, message=b"publish\n"):
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as control:
+                    control.sendto(message, str(controls[child.pid]))
+
+            def start_presentation(child, log):
+                if args.staged:
+                    staged(child, log)
+                    publish(child)
+                session.expect_log(child, log, "Native GL video presented; pointer reached underlying witness")
 
             def identify_frame(child, log):
                 if child.poll() is not None:
@@ -127,12 +156,32 @@ def main():
                 return errors.index(error), error
 
             child, log = spawn()
+            idle_cpu = None
+            if args.staged:
+                staged(child, log)
+                mark = len(session.text(log))
+                session.ipc(f"output {first} mode 800x500")
+                session.expect_log(child, log, "Native GL video staged 800x500; paused parent held", after=mark)
+                # Wait for the separate witness to resize, then inspect held pixels
+                # while preroll is idle. No playback or presentation may begin.
+                wait_for(lambda: solid(session.capture(first), (34, 34, 34)), "resized video staging witness")
+                mark = session.text(log)
+                before = cpu_seconds(child.pid)
+                until = time.monotonic() + args.hold_seconds
+                while time.monotonic() < until:
+                    assert child.poll() is None and solid(session.capture(first), (34, 34, 34)), session.diagnostics()
+                    time.sleep(.05)
+                idle_cpu = cpu_seconds(child.pid) - before
+                assert idle_cpu < .25 and session.text(log) == mark, (idle_cpu, session.diagnostics())
+                assert "Native GL video presented" not in mark and "parent published" not in mark, session.diagnostics()
+                publish(child)
             session.expect_log(child, log, "Native GL video presented; pointer reached underlying witness")
             seen = set()
             maximum_error = 0
             clicks = 2
-            for command in [f"output {first} mode 800x500", f"output {first} scale 1.25",
-                            f"output {first} scale 2", f"output {first} transform 90"]:
+            commands = [] if args.staged else [f"output {first} mode 800x500", f"output {first} scale 1.25",
+                                               f"output {first} scale 2", f"output {first} transform 90"]
+            for command in commands:
                 result = identify_frame(child, log)
                 assert result is not None, session.diagnostics()
                 identity, error = result
@@ -156,6 +205,8 @@ def main():
             assert child.returncode == 0, session.diagnostics()
             report = json.loads(stdout)
             assert report["scope"] == "shared_video_into_owned_private_wayland_surface", report
+            assert report["staging"]["enabled"] == args.staged and report["staging"]["published"], report
+            assert report["staging"]["playback_started"], report
             assert ("nvvp9dec" if args.nvidia else "vp9dec") in report["decoders"], report
             decoder = next(item for item in report["decoder_buffers"].values()
                            if item["factory"] == ("nvvp9dec" if args.nvidia else "vp9dec"))
@@ -182,9 +233,14 @@ def main():
             assert fences["submitted"] == fences["retired"] == len(report["frames"]), report
             assert 1 <= fences["peak_in_flight"] <= fences["limit"] == 3 and fences["cleanup_finish_calls"] == 0, report
             presented = set(report["presented_frame_ids"])
+            if args.staged:
+                hidden = [frame for frame in report["frames"] if not frame["published"]]
+                assert report["staging"]["prepared"] and 2 <= len(hidden) <= 3, report
+                assert all(frame["pts_ns"] == 0 and frame["id"] not in presented for frame in hidden), report
+                assert all(not frame["geometry_refresh_required"] for frame in report["frames"] if frame["published"]), report
             assert presented and presented <= {frame["id"] for frame in report["frames"]}, report
             assert len(presented) == report["presented"] and report["discarded"] == 0, report
-            sizes = {tuple(frame["logical_size"]) for frame in report["frames"]}
+            sizes = {tuple(frame["logical_size"]) for frame in report["frames"] if frame["published"]}
             for size in sizes:
                 assert any(tuple(frame["logical_size"]) == size and frame["id"] in presented
                            and not frame["geometry_refresh_required"] for frame in report["frames"]), report
@@ -197,13 +253,44 @@ def main():
             wait_for(empty, "video/witness surface cleanup after EOS and rewind")
 
             interrupted, log = spawn()
-            session.expect_log(interrupted, log, "Native GL video presented; pointer reached underlying witness")
+            start_presentation(interrupted, log)
             interrupted.send_signal(signal.SIGINT)
             stdout = finish(interrupted)
             assert interrupted.returncode == 0 and json.loads(stdout)["interrupted"], session.diagnostics()
             wait_for(empty, "video/witness cleanup after SIGINT")
 
+            if args.staged:
+                cancelled, log = spawn()
+                staged(cancelled, log)
+                cancelled.send_signal(signal.SIGINT)
+                cancellation = json.loads(finish(cancelled))
+                assert cancelled.returncode == 0 and cancellation["status"] == "cancelled_before_publish", cancellation
+                assert not cancellation["staging"]["published"] and cancellation["presented"] == 0, cancellation
+                assert not cancellation["staging"]["playback_started"], cancellation
+                assert cancellation["delivery"]["received"] == 1 and cancellation["witness_button_events"] == 0, cancellation
+                assert cancellation["egl_lifecycle"] == report["egl_lifecycle"], cancellation
+                assert all(frame["pts_ns"] == 0 and not frame["published"] for frame in cancellation["frames"]), cancellation
+                assert cancellation["consumer_fences"]["submitted"] == cancellation["consumer_fences"]["retired"], cancellation
+                assert cancellation["consumer_fences"]["cleanup_finish_calls"] == 0, cancellation
+                wait_for(empty, "paused preroll cancellation cleanup")
+
+                invalid_control, log = spawn()
+                staged(invalid_control, log)
+                publish(invalid_control, b"invalid\n")
+                assert not finish(invalid_control).strip() and invalid_control.returncode != 0, session.diagnostics()
+                assert "invalid or duplicate staged publish command" in session.text(log), session.diagnostics()
+                wait_for(empty, "preroll cleanup after malformed control")
+
+                hidden_crash, log = spawn()
+                staged(hidden_crash, log)
+                hidden_crash.kill()
+                assert not finish(hidden_crash).strip() and hidden_crash.returncode == -signal.SIGKILL
+                wait_for(empty, "unpublished video cleanup after SIGKILL")
+
             control, log = spawn(extra=["--intercept-input"])
+            if args.staged:
+                staged(control, log)
+                publish(control)
             stdout = finish(control)
             assert control.returncode != 0 and not stdout.strip(), session.diagnostics()
             assert "test pointer was intercepted by video surface" in session.text(log), session.diagnostics()
@@ -217,14 +304,14 @@ def main():
             wait_for(empty, "malformed media cleanup")
 
             crashed, log = spawn()
-            session.expect_log(crashed, log, "Native GL video presented; pointer reached underlying witness")
+            start_presentation(crashed, log)
             crashed.kill()
             stdout = finish(crashed)
             assert crashed.returncode == -signal.SIGKILL and not stdout.strip(), stdout
             wait_for(empty, "video/witness cleanup after SIGKILL")
 
             lost, log = spawn()
-            session.expect_log(lost, log, "Native GL video presented; pointer reached underlying witness")
+            start_presentation(lost, log)
             session.process.terminate()
             session.process.wait(timeout=10)
             stdout = finish(lost)
@@ -234,15 +321,20 @@ def main():
             raise
         finally:
             session.close()
-    print(json.dumps({"native_gl_video": "passed", "gl_api": args.gl_api, "nvidia": args.nvidia,
+    print(json.dumps({"native_gl_video": "passed", "gl_api": args.gl_api, "nvidia": args.nvidia, "staged": args.staged,
                       "render_node": str(render_node) if render_node else None,
                       "gl": report["gl"], "gstreamer": report["gstreamer"],
                       "visible_frame_ids": sorted(seen), "max_compositor_channel_error": maximum_error,
                       "presented": report["presented"], "frames": len(report["frames"]),
+                      "unpublished_idle_cpu_seconds": idle_cpu,
+                      "unpublished_hold_seconds": args.hold_seconds if args.staged else None,
                       "checks": ["original animated pixels", "per-frame presentation feedback", "loop after draining samples",
-                                 "real click-through after resize/scale/rotation", "selected output", "bounded fences",
+                                 "real click-through", "selected output", "bounded fences",
                                  "no consumer map/readback/offscreen target", "EOS", "SIGINT", "opaque-input negative control",
-                                 "malformed media", "SIGKILL", "compositor loss"]}))
+                                 "malformed media", "SIGKILL", "compositor loss",
+                                 *(["paused preroll", "unpublished resize", "held pixels and idle sleep", "publish before playback",
+                                    "cancellation and malformed control while paused", "unpublished SIGKILL"] if args.staged
+                                   else ["resize/scale/rotation without decoder restart"])]}))
 
 
 if __name__ == "__main__":

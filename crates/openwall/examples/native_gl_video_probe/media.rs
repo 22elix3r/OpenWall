@@ -20,6 +20,29 @@ struct Latest {
 
 pub type Wake = Arc<Mutex<UnixStream>>;
 
+fn deliver(
+    sample: gst::Sample,
+    latest: &Arc<Mutex<Latest>>,
+    writer: &Wake,
+) -> std::result::Result<gst::FlowSuccess, gst::FlowError> {
+    let previous = {
+        let mut slot = latest.lock().map_err(|_| gst::FlowError::Error)?;
+        if !slot.accepting {
+            return Ok(gst::FlowSuccess::Ok);
+        }
+        slot.received += 1;
+        if slot.sample.is_some() {
+            slot.replaced += 1;
+        }
+        slot.sample.replace(sample)
+    };
+    // Releasing a buffer can call into a producer pool. Never do it under the
+    // slot lock, or run GL / wait for the UI thread from a streaming callback.
+    drop(previous);
+    wake(writer);
+    Ok(gst::FlowSuccess::Ok)
+}
+
 pub fn wake(writer: &Wake) {
     if let Ok(mut writer) = writer.lock() {
         let _ = writer.write_all(&[1]);
@@ -41,6 +64,7 @@ impl Media {
         display: &gstreamer_gl_egl::GLDisplayEGL,
         wrapped: &gst_gl::GLContext,
         writer: Wake,
+        paused: bool,
     ) -> Result<Self> {
         let uri = glib::filename_to_uri(path.canonicalize()?, None)?;
         let bin = gst::parse::bin_from_description(
@@ -76,28 +100,21 @@ impl Media {
         }));
         let incoming = latest.clone();
         let sample_writer = writer.clone();
-        sink.set_callbacks(
-            gstreamer_app::AppSinkCallbacks::builder()
-                .new_sample(move |sink| {
-                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                    let previous = {
-                        let mut slot = incoming.lock().map_err(|_| gst::FlowError::Error)?;
-                        if !slot.accepting {
-                            return Ok(gst::FlowSuccess::Ok);
-                        }
-                        slot.received += 1;
-                        if slot.sample.is_some() {
-                            slot.replaced += 1;
-                        }
-                        slot.sample.replace(sample)
-                    };
-                    // Never run GL, wait for the UI thread or release a buffer under the slot lock.
-                    drop(previous);
-                    wake(&sample_writer);
-                    Ok(gst::FlowSuccess::Ok)
-                })
-                .build(),
-        );
+        let callbacks = gstreamer_app::AppSinkCallbacks::builder().new_sample(move |sink| {
+            let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+            deliver(sample, &incoming, &sample_writer)
+        });
+        let callbacks = if paused {
+            let incoming = latest.clone();
+            let preroll_writer = writer.clone();
+            callbacks.new_preroll(move |sink| {
+                let sample = sink.pull_preroll().map_err(|_| gst::FlowError::Eos)?;
+                deliver(sample, &incoming, &preroll_writer)
+            })
+        } else {
+            callbacks
+        };
+        sink.set_callbacks(callbacks.build());
         let bus = pipeline.bus().context("pipeline bus missing")?;
         bus.set_sync_handler(move |_, message| {
             if matches!(
@@ -116,8 +133,17 @@ impl Media {
             latest,
             eos: false,
         };
-        media.pipeline.set_state(gst::State::Playing)?;
+        media.pipeline.set_state(if paused {
+            gst::State::Paused
+        } else {
+            gst::State::Playing
+        })?;
         Ok(media)
+    }
+
+    pub fn resume(&self) -> Result<()> {
+        self.pipeline.set_state(gst::State::Playing)?;
+        Ok(())
     }
 
     pub fn take(&self) -> Result<Option<gst::Sample>> {

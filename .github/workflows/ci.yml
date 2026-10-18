@@ -107,6 +107,8 @@ jobs:
           cargo build -p openwall --example native_gl_video_probe --features video-gl-probe --locked
           /usr/bin/python3 scripts/test_native_gl_video.py
           /usr/bin/python3 scripts/test_native_gl_video.py --gl-api gles
+          /usr/bin/python3 scripts/test_native_gl_video.py --staged --hold-seconds 11
+          /usr/bin/python3 scripts/test_native_gl_video.py --staged --gl-api gles
       - name: Older GL runtime rejection
         if: matrix.os == 'ubuntu-24.04'
         run: |
