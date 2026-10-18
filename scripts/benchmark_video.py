@@ -134,12 +134,14 @@ def benchmark(binary, video, output, seconds=30, warmup=5, startup_timeout=15, s
                 now = time.monotonic()
                 if child.poll() is not None:
                     raise RuntimeError(f"worker exited before the sample completed ({child.returncode})")
-                if diagnostics.ready_at is None:
-                    if now - started >= startup_timeout:
-                        raise RuntimeError("no native sink buffer before startup deadline")
-                    continue
-                if diagnostics.scene_gpu or not diagnostics.native_parent:
+                if diagnostics.scene_gpu:
                     raise RuntimeError("expected a native video desktop worker without a scene GPU")
+                # The streaming thread can report its buffer before the main thread
+                # prints the parent setup message. Both orders are valid.
+                if diagnostics.ready_at is None or not diagnostics.native_parent:
+                    if now - started >= startup_timeout:
+                        raise RuntimeError("native parent/sink buffer not ready before startup deadline")
+                    continue
                 if now < diagnostics.ready_at + warmup:
                     continue
                 sample = process_sample(child.pid)
