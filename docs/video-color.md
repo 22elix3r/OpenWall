@@ -51,6 +51,27 @@ reports each measured error and an independent `all_within_one_level_of_referenc
 the local result for that flag is **false**. Retain the gap as an open M0 issue when
 choosing a production conversion path. Do not silently widen the budgets after a failure.
 
+## GStreamer 1.24.2 full-range GL failure
+
+Ubuntu 24.04 CI exposed a larger GL error on full-range input. For the BT.709 full-range
+fixture, one patch returned `(255, 0, 0)` instead of the reference `(255, 36, 10)`.
+The decoder correctly reported full-range BT.709 caps. This is an upstream limitation:
+[1.24.2's GL converter](https://github.com/GStreamer/gstreamer/blob/1.24.2/subprojects/gst-plugins-base/gst-libs/gst/gl/gstglcolorconvert.c)
+selects fixed limited-range BT.709 coefficients only for an exact colorimetry match,
+and otherwise uses limited-range BT.601. Full-range BT.709 does not match that branch.
+[1.26.11](https://github.com/GStreamer/gstreamer/blob/1.26.11/subprojects/gst-plugins-base/gst-libs/gst/gl/gstglcolorconvert.c)
+derives its conversion matrix from the input range and matrix metadata instead.
+
+For exactly GStreamer 1.24.2, the two full-range GL cases are **known upstream failures**.
+The suite verifies their observed output against the separate limited-range BT.601
+reference with the same one-level budget, and still reports their error against the
+correct reference. `known_upstream_full_range_error` explicitly identifies them. This
+exception neither accepts arbitrary pixel errors nor declares full-range conversion
+qualified. Other versions and cases must pass the normal check; their failures require
+investigation. A future GL presenter must qualify its actual runtime and retain a
+fallback on affected versions. Do not switch production playback based on 1.26 results
+alone.
+
 ## Limits
 
 Software GL checks are deterministic infrastructure checks, not hardware qualification.
