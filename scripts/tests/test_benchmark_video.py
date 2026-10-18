@@ -63,6 +63,27 @@ class BenchmarkProcesses(unittest.TestCase):
         self.assertNotIn("cpu_percent_one_core", report)
         self.assertIn("decoder failed", report["diagnostics_tail"])
 
+    def test_streaming_thread_can_report_data_before_the_parent_setup_log(self):
+        report = self.run_worker(
+            "signal.signal(signal.SIGINT, lambda *_: sys.exit(0))\n"
+            "print('First video buffer: DMA-BUF=false; caps=video/x-raw', flush=True)\n"
+            "time.sleep(.15)\n"
+            "print('Native video attached on HEADLESS-1', flush=True)\n"
+            "while True: time.sleep(.05)\n")
+        self.assertEqual(report["status"], "passed", report)
+        self.assertFalse(report["forced_stop"])
+
+    def test_sink_data_alone_cannot_start_a_native_worker_measurement(self):
+        report = self.run_worker(
+            "signal.signal(signal.SIGINT, lambda *_: sys.exit(0))\n"
+            "print('First video buffer: DMA-BUF=false; caps=video/x-raw', flush=True)\n"
+            "while True: time.sleep(.05)\n")
+        self.assertEqual(report["status"], "failed", report)
+        self.assertIn("startup deadline", report["error"])
+        self.assertFalse(report["forced_stop"])
+        self.assertIsNotNone(report["first_sink_buffer"])
+        self.assertNotIn("cpu_percent_one_core", report)
+
 
 if __name__ == "__main__":
     unittest.main()

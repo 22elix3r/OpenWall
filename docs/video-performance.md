@@ -64,3 +64,6 @@ The private Sway suite also measures a real video worker and checks clean surfac
 Those tests establish accounting and timeout behavior, not desktop performance. Hardware
 qualification still needs sustained runs, visible-pixel checks and an equivalent native
 playback baseline at representative 1080p/4K rates.
+
+See the [2026-10-18 exploratory release measurements](video-baseline-2026-10-18.md)
+for the tested revisions, hashes, conditions and remaining limits.
