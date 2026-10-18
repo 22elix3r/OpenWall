@@ -89,7 +89,7 @@ shows why mapping deferred readback must be accounted for when a CPU consumer is
 This is a bounded interoperability and buffer-reuse check. It does not qualify sustained
 playback, looping, hardware color accuracy, HDR, display color interpretation,
 compositor import, input behavior, resize/hotplug or energy use. It changes no production
-renderer. The next gate is an owned EGL Wayland surface with private compositor pixel,
-click-through and teardown checks, followed by clock/presentation scheduling and sustained
-hardware measurements. The verification atlas is a test output, not the production
-presenter's allocation strategy.
+renderer. A separate [owned EGL Wayland surface proof](owned-egl-wayland-probe.md) checks
+private compositor pixels, click-through and teardown. Combining those two boundaries,
+clock/presentation scheduling and sustained hardware measurements remain open. The
+verification atlas is a test output, not the production presenter's allocation strategy.
