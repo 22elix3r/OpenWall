@@ -27,15 +27,22 @@ def solid(image, color):
                for (low, high), target in zip(image.getextrema(), color))
 
 
-def quadrants(image):
-    # Check entire interiors, including near the outer edges, rather than just
-    # four center pixels. Leave a two-pixel tolerance around fractional boundaries.
+def pointer_free_regions(image):
     # Sway 1.9's software cursor can be included in screencopy briefly after the
     # injected center click, despite grim's default cursor exclusion. Ignore only
     # its small central footprint; retain the rest of each quadrant and all edges.
     cx, cy = image.width // 2, image.height // 2
-    visible = [(0, 0, image.width, cy - 4), (0, cy + 28, image.width, image.height),
-               (0, cy - 4, cx - 4, cy + 28), (cx + 20, cy - 4, image.width, cy + 28)]
+    return [(0, 0, image.width, cy - 4), (0, cy + 28, image.width, image.height),
+            (0, cy - 4, cx - 4, cy + 28), (cx + 20, cy - 4, image.width, cy + 28)]
+
+
+def solid_without_pointer(image, color):
+    return all(solid(image.crop(region), color) for region in pointer_free_regions(image))
+
+
+def quadrants(image):
+    # Check entire interiors and outer edges, with two pixels around boundaries.
+    visible = pointer_free_regions(image)
     for (left, top, right, bottom), color in zip(
             [(0, 0, .5, .5), (.5, 0, 1, .5), (0, .5, .5, 1), (.5, .5, 1, 1)], COLORS):
         box = (int(image.width * left) + 2, int(image.height * top) + 2,
