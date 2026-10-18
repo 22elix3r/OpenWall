@@ -28,6 +28,10 @@ pixels, dropped frames, compositor/GPU energy or allocations in other processes.
 
 ## Decoder and transfer evidence
 
+Use the [windowless Rust transfer probe](video-transfer-probe.md) to isolate decoding,
+conversion and memory negotiation from the desktop presenter. Its fake-sink measurements
+have a different scope from this full-worker benchmark.
+
 Record the host's GStreamer, kernel, compositor and GPU/driver versions alongside each
 report. Change decoder ranks or driver variables only for the test process. Use a fresh
 temporary `GST_REGISTRY_1_0` when testing a different driver environment, since available
