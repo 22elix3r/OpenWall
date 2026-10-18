@@ -18,6 +18,8 @@ import time
 
 from PIL import Image, ImageDraw
 
+from benchmark_video import benchmark
+
 ROOT = Path(__file__).resolve().parents[1]
 COLORS = [(220, 20, 30), (20, 210, 40), (30, 60, 220), (230, 210, 20)]
 
@@ -262,6 +264,14 @@ def main():
                 assert session.text(log).count("GStreamer decoder:") == decoders, session.diagnostics()
                 assert "OpenWall GPU:" not in session.text(log), session.diagnostics()
                 session.stop_worker(child)
+
+                measurement = benchmark(args.binary.resolve(), args.video_fixture.resolve(),
+                                        second, seconds=1, warmup=0, env=session.env)
+                assert measurement["status"] == "passed", measurement
+                assert measurement["first_sink_buffer"] is not None, measurement
+                assert measurement["rss_samples"] >= 2, measurement
+                assert not session.windows(), "measurement worker opened an application window"
+                wait_for(lambda: not session.video_visible(second), "measurement surface cleanup")
 
             # A dead compositor must terminate the worker, with no poll-loop spin.
             child, log = session.start_worker(args.binary, fixture, first)
