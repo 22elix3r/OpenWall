@@ -51,10 +51,13 @@ and [EGL image export](https://github.com/GStreamer/gstreamer/blob/1.26.11/subpr
 A separate, single-run surfaceless comparison used NVIDIA decode, RGBA output and a
 clock-paced fake sink. After five seconds of warm-up, CPU conversion used 12.639% of
 one core over 30 seconds; GL conversion followed by system-memory download used 8.713%.
-The GL path kept decoder output in `GLMemory` but still downloaded the final RGBA frame.
-These were temporary diagnostic pipelines, without Wayland presentation, pixel/color
-conformance or repeated measurements. They suggest a direction for investigation;
-they do not justify changing the default renderer or claiming GPU-resident playback.
+The GL path kept decoder output in `GLMemory`; its final CPU-readable RGBA caps were
+backed by `GLMemoryPBO`. The fake sink did not map or copy those buffers, so that result
+excludes final CPU consumption of the deferred readback. These temporary diagnostic
+pipelines had no Wayland presentation, pixel/color conformance or repeated measurements.
+The numbers do not establish a complete transfer saving, justify changing the default
+renderer or qualify GPU-resident playback. Follow-up comparisons must explicitly consume
+the CPU-bound frames and report their actual allocator types as well as caps.
 
 Before selecting a GL presenter, verify pixel/color fidelity, default input regions of
 its embedded subsurfaces, resize/teardown and hardware buffer synchronization. Retain
