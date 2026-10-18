@@ -214,8 +214,11 @@ to distinct media pipelines: the previous source keeps moving and loops while a 
 candidate is held; publication starts its clock after presentation; explicit rollback
 redraws the retained previous PTS and resumes that same source. Private Mesa/NVIDIA tests
 also retain moving previous video after candidate abort or malformed-media failure.
-Automatic recovery after publication, repeated transactions, changing output geometry
-and the production manager/worker integration remain open.
+Injected post-publication GStreamer errors now trigger rollback to the retained previous
+PTS; failed/rolled-back candidate resources are retired after previous presentation.
+Explicit finalization instead retires the previous source while the candidate continues
+moving through another loop. Real decoder crashes, presentation/control loss, repeated
+transactions, changing output geometry and production manager/worker integration remain open.
 
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,
   Finder icons, fullscreen behavior and native app activation.

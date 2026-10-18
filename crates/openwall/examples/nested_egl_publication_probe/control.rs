@@ -13,6 +13,7 @@ pub enum Command {
     Publish,
     Rollback,
     Abort,
+    Finalize,
 }
 
 pub struct Control(UnixDatagram);
@@ -29,6 +30,7 @@ impl Control {
                 b"publish\n" => Ok(Some(Command::Publish)),
                 b"rollback\n" => Ok(Some(Command::Rollback)),
                 b"abort\n" => Ok(Some(Command::Abort)),
+                b"finalize\n" => Ok(Some(Command::Finalize)),
                 _ => bail!("invalid nested diagnostic command"),
             },
             Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(None),

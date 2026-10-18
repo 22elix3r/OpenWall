@@ -176,6 +176,7 @@ pub fn run() -> Result<()> {
                     aborted_lifecycle = Some(counts.snapshot());
                     eprintln!("Nested candidate aborted; previous root retained");
                 }
+                Command::Finalize => anyhow::bail!("invalid nested command order"),
             }
         }
         if stopped.load(Ordering::Relaxed) {

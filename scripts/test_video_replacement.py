@@ -175,6 +175,8 @@ def main():
             assert next(frame for frame in report["frames"] if frame["kind"] == "publish")["pts_ns"] == 0, report
             assert next(frame for frame in report["frames"] if frame["kind"] == "rollback")["pts_ns"] == report["rollback_pts_ns"], report
             assert all(frame["pts_ns"] == 0 for frame in report["frames"] if frame["source"] == 1 and not frame["visible"]), report
+            assert report["candidate_first_frame_confirmed"] and not report["finalized"] and not report["automatic_rollback"], report
+            assert report["removed_candidate_lifecycle"] == dict(LIFECYCLE, surface_destructions=1, context_destructions=0, display_terminations=0), report
             assert session.capture(other).tobytes() == other_baseline, "other output changed"
             wait_for(empty, "rollback cleanup")
 
@@ -204,7 +206,56 @@ def main():
             assert failure["removed_candidate_lifecycle"] == dict(LIFECYCLE, surface_destructions=1, context_destructions=0, display_terminations=0), failure
             wait_for(empty, "failed candidate leaves previous alive until shutdown")
 
+            faulty, log = spawn(extra=["--fail-candidate-after-ms", "1000"])
+            session.expect_log(faulty, log, "Replacement candidate cached; previous video continues")
+            command(faulty, b"publish\n")
+            session.expect_log(faulty, log, "Replacement candidate video presented; pointer reached witness")
+            fault_markers = set()
+            until = time.monotonic() + 8
+            while time.monotonic() < until:
+                source, identity = pixels(faulty, [0, 1])
+                if source == 1:
+                    fault_markers.add(identity)
+                if source == 0 and "Replacement previous video restored; pointer reached witness" in session.text(log):
+                    break
+            else:
+                raise AssertionError("injected candidate media error did not restore previous video")
+            assert len(fault_markers) >= 2, ("candidate did not move before injected failure", fault_markers)
+            moving(faulty, 0)
+            faulty.send_signal(signal.SIGINT)
+            recovery = json.loads(finish(faulty))
+            assert faulty.returncode == 0 and recovery["status"] == "passed", session.diagnostics()
+            validate(recovery)
+            assert recovery["fault_injected"] and recovery["automatic_rollback"] and recovery["previous_restored"], recovery
+            assert recovery["candidate_presented"] and recovery["candidate_first_frame_confirmed"] and not recovery["finalized"], recovery
+            assert "injected private candidate stream error" in recovery["candidate_failure"] and recovery["candidate_report_error"] is None, recovery
+            assert [start["source"] for start in recovery["clock_starts"]] == [0, 1, 0], recovery
+            assert recovery["removed_candidate_lifecycle"] == dict(LIFECYCLE, surface_destructions=1, context_destructions=0, display_terminations=0), recovery
+            assert next(frame for frame in recovery["frames"] if frame["kind"] == "rollback")["pts_ns"] == recovery["rollback_pts_ns"], recovery
+            wait_for(empty, "automatic media-error rollback cleanup")
+
+            finalized, log = spawn()
+            session.expect_log(finalized, log, "Replacement candidate cached; previous video continues")
+            command(finalized, b"publish\n")
+            session.expect_log(finalized, log, "Replacement candidate video presented; pointer reached witness")
+            command(finalized, b"finalize\n")
+            session.expect_log(finalized, log, "Replacement finalized; previous source retired; candidate video continues")
+            finalized_markers = moving(finalized, 1, 7)
+            finalized.send_signal(signal.SIGINT)
+            committed = json.loads(finish(finalized))
+            assert finalized.returncode == 0 and committed["status"] == "passed", session.diagnostics()
+            validate(committed)
+            assert committed["finalized"] and not committed["previous_restored"] and not committed["candidate_failure"], committed
+            assert committed["candidate"]["completed_loops"] >= 1 and len(finalized_markers) == 12, committed
+            assert committed["retired_previous_lifecycle"] == dict(LIFECYCLE, surface_destructions=1, context_destructions=0, display_terminations=0), committed
+            assert [start["source"] for start in committed["clock_starts"]] == [0, 1], committed
+            later = [frame for frame in committed["frames"] if frame["id"] > committed["finalization_frame_id"]]
+            assert later and all(frame["source"] == 1 and frame["visible"] for frame in later), committed
+            assert session.capture(other).tobytes() == other_baseline, "finalization changed other output"
+            wait_for(empty, "finalized candidate cleanup")
+
             for message, error in [(b"rollback\n", "invalid replacement command order"),
+                                   (b"finalize\n", "invalid replacement command order"),
                                    (b"unknown\n", "invalid nested diagnostic command"),
                                    (b"publish\n" + b"x"*64, "invalid nested diagnostic command")]:
                 invalid, log = spawn()
@@ -263,6 +314,8 @@ def main():
                       "checks":["distinct old/new sources", "old video moves while candidate paused", "presentation-gated clocks",
                                 "sampled publication/rollback pixels", "rollback retained PTS", "video moves after restoration",
                                 "abort and malformed candidate retain moving previous video", "real input", "unchanged second output",
+                                "injected post-publication media error restores previous video", "failed/rolled-back candidate retired",
+                                "finalize retires previous source while candidate keeps moving and looping",
                                 "input negative control", "SIGKILL", "compositor loss"]}))
 
 

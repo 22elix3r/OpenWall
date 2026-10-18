@@ -152,6 +152,19 @@ impl Media {
         Ok(())
     }
 
+    #[allow(dead_code)] // Explicit fault injection for the private replacement diagnostic.
+    pub fn diagnostic_error(&self) -> Result<()> {
+        self.bus.post(
+            gst::message::Error::builder(
+                gst::StreamError::Failed,
+                "injected private candidate stream error",
+            )
+            .src(&self.pipeline)
+            .build(),
+        )?;
+        Ok(())
+    }
+
     pub fn take(&self) -> Result<Option<gst::Sample>> {
         Ok(self
             .latest

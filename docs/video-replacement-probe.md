@@ -17,6 +17,8 @@ mappings in one root commit. The previous source is paused with its last rendere
 retained. Actual candidate presentation starts its clock. Explicit rollback draws that
 retained previous sample, switches the container mappings back, waits for actual previous
 presentation and resumes the previous clock. The previous decoder is not recreated.
+After that presentation, the candidate's samples/fences, media pipeline, native window
+and protocol branch are retired while the previous source continues.
 
 Aborting a prepared candidate or failing to open/decode it before publication releases
 its media/sample and native window before removing its protocol branch. The previous
@@ -40,11 +42,25 @@ python3 scripts/test_video_replacement.py --nvidia
 ```
 
 The private control reuses the finite `publish\n`, `rollback\n`, `abort\n` diagnostic
-commands with checked phase ordering. Input interception is a negative control on the
+commands plus explicit `finalize\n`, with checked phase ordering. Finalization requires
+confirmed candidate presentation/input, drains consumer leases and retires the previous
+source/window/branch while the candidate keeps playing. It models the resource-retirement
+step after a manager commits an assignment; this diagnostic does not implement persistence.
+After finalization the previous source is unavailable for rollback. Input interception is a negative control on the
 root; normal root, container and native child input regions are empty. All three visible
 states require real virtual pointer clicks to reach the underlying witness. A regular
 SIGINT before completing the transaction reports `interrupted`, with explicit preparation,
 playback and presentation fields rather than claiming a completed rollback.
+
+`--fail-candidate-after-ms` is explicit fault injection for the private harness. After
+confirmed candidate readiness it posts an injected GStreamer stream-error message through
+the pipeline bus. The normal media error reader schedules rollback, stops submitting
+candidate frames, waits for the pending feedback, redraws the retained previous PTS and
+resumes the previous clock after presentation. Failed-candidate metadata collection must
+not prevent recovery. Its samples/fences are drained before its pipeline/window/branch
+are removed. The harness checks moving candidate frames before this fault and moving
+previous frames afterwards. It injects a bus error; it does not corrupt an actual decoder
+or reproduce a decoder/driver crash.
 
 ## Evidence and remaining gates
 
@@ -60,16 +76,24 @@ Tests observe all twelve previous-source markers and a full loop during a seven-
 candidate hold, moving candidate/restored pixels, sampled transitions matching complete
 old/new fixture patch sets, exact retained rollback PTS, presentation-gated clock events,
 six witness button events and an unchanged second output. Sampled channel errors are
-zero for desktop Mesa/NVIDIA and at most one for GLES in this qualification. All 26
+zero for desktop Mesa and at most one for NVIDIA/GLES in the expanded qualification. All 26
 submitted consumer fences retire, with measured peak one and zero cleanup finishes.
 Abort and malformed candidate cases retain visibly moving previous video. Invalid
 commands/order, SIGINT, input interception, SIGKILL and compositor loss exercise cleanup.
 Final ownership counts require two surfaces and exactly one UI context/display owner.
+The injected post-publication error also restores the exact retained previous PTS and
+retires the candidate without terminating the shared context/display. A separate finalized
+run retires the previous source, observes all twelve candidate markers and another EOS
+loop, and requires every later submitted frame to belong to the candidate. Both midpoint
+paths show one of two native windows destroyed, with the context/display still alive.
 
 This is a bounded private diagnostic with fixed published geometry, logical-size SDR
 buffers and one transaction. It is not general worker IPC, production Apply or a content
-sandbox. Post-publication decoder errors/feedback loss currently fail the diagnostic;
-automatic recovery/rollback from those errors is still required. Repeated candidates,
+sandbox. Injected media-bus errors after confirmed candidate readiness now have automatic
+rollback coverage. Real post-publication decoder failures, errors before first candidate
+confirmation, lost/discarded presentation feedback, control-connection loss and rollback
+failure still need qualification. A decoder/worker process crash loses both in-process
+sources; manager restart/static fallback remains necessary. Repeated candidates,
 replacing a committed candidate, device loss, dynamic output geometry, multi-output visual
 atomicity, GNOME/Plasma/macOS roles, physical scanout and sustained resource/energy budgets
 remain open. Screencopy samples check fixture patch interiors, not every compositor frame.
