@@ -97,8 +97,9 @@ This is a finite single-output proof with stretched SDR frames and logical-size 
 It does not establish general GPU/compositor compatibility, sustained playback, power savings,
 aspect/fit policy, full-resolution HiDPI rendering, display color management, HDR, dynamic
 formats, other desktop environments, multi-output presentation or macOS behavior.
-The native window owner must not be duplicated per output on a common Wayland connection:
-those surfaces share the EGLDisplay, so production needs a shared display/session owner.
+The diagnostics now use a [shared EGL session owner](shared-egl-session-probe.md) for
+display/context lifetime, with separately retained native windows. Production still needs
+general output management and video sharing on top of that bounded ownership proof.
 Decoder sharing, device affinity, pause/resume, visibility policy and transactional apply
 remain required before replacing the normal video backend. The separate
 [desktop GL qualification](desktop-gl-video-interop.md) describes NVIDIA's transfer

@@ -7,12 +7,12 @@ import os
 from pathlib import Path
 import shutil
 import signal
-import stat
 import subprocess
 import tempfile
 import time
 
 from test_wayland_headless import Session, wait_for
+from private_gpu import nvidia_renderer
 from video_color_fixtures import WIDTH, HEIGHT, patches, original_yuv, expected_rgba, enlarged_yuv
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,14 +38,7 @@ def main():
     render_env = None
     render_node = None
     if args.nvidia:
-        candidates = [Path("/dev/dri") / node.name for node in sorted(Path("/sys/class/drm").glob("renderD*"))
-                      if (node / "device/vendor").is_file() and (node / "device/vendor").read_text().strip() == "0x10de"]
-        assert args.render_node or len(candidates) == 1, "select an existing NVIDIA render node with --render-node"
-        render_node = (args.render_node or candidates[0]).resolve(strict=True)
-        assert render_node in candidates and stat.S_ISCHR(render_node.stat().st_mode), "not an NVIDIA DRM render node"
-        assert (Path("/sys/class/drm") / render_node.name / "device/driver").resolve().name == "nvidia", "the existing NVIDIA driver is required"
-        render_env = {"WLR_RENDERER": "gles2", "WLR_RENDER_DRM_DEVICE": str(render_node),
-                      "LIBGL_ALWAYS_SOFTWARE": "0", "__EGL_VENDOR_LIBRARY_FILENAMES": str(vendor)}
+        vendor, render_node, render_env = nvidia_renderer(args.render_node)
     guard_env = os.environ.copy()
     guard_env.pop("OPENWALL_PRIVATE_COMPOSITOR", None)
     rejected = subprocess.run([str(binary), "missing.webm", "--output", "never-connect"], env=guard_env,
@@ -174,6 +167,8 @@ def main():
             assert len(seen) >= 4, ("fixture did not visibly animate", seen)
             assert report["consumer_cpu_buffer_maps"] == report["consumer_readbacks"] == report["consumer_offscreen_targets"] == 0, report
             assert report["egl_context_creations"] == 1 and report["source_size"] == [WIDTH * scale, HEIGHT * scale], report
+            assert report["egl_lifecycle"] == {"display_initializations": 1, "context_creations": 1, "surface_creations": 1,
+                                               "surface_destructions": 1, "context_destructions": 1, "display_terminations": 1}, report
             assert report["gl"]["api"] == args.gl_api, report
             assert ("NVIDIA" in report["gl"]["vendor"] if args.nvidia else "llvmpipe" in report["gl"]["renderer"].lower()), report
             if args.nvidia:
@@ -189,6 +184,10 @@ def main():
             presented = set(report["presented_frame_ids"])
             assert presented and presented <= {frame["id"] for frame in report["frames"]}, report
             assert len(presented) == report["presented"] and report["discarded"] == 0, report
+            sizes = {tuple(frame["logical_size"]) for frame in report["frames"]}
+            for size in sizes:
+                assert any(tuple(frame["logical_size"]) == size and frame["id"] in presented
+                           and not frame["geometry_refresh_required"] for frame in report["frames"]), report
             assert report["delivery"]["latest_slot_limit"] == 1 and report["delivery"]["received"] >= FRAMES * 2, report
             for loop in range(2):
                 frames = [frame for frame in report["frames"] if frame["loop"] == loop and frame["id"] in presented]

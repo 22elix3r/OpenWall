@@ -22,6 +22,7 @@ use wayland_protocols_wlr::{
 
 #[derive(Default)]
 pub(super) struct State {
+    pub secondary: Option<SecondarySurface>,
     pub surface: Option<wl_surface::WlSurface>,
     layer: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     witness: Option<wl_surface::WlSurface>,
@@ -54,6 +55,26 @@ pub(super) struct State {
     pub witness_buttons: u32,
     pub intercepted: bool,
     pub closed: bool,
+}
+
+pub(super) struct SecondarySurface {
+    pub surface: wl_surface::WlSurface,
+    layer: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+    pub configured: Option<(u32, u32)>,
+    pub dirty: bool,
+    pub pending_feedback: bool,
+    pub presented: u32,
+    pub discarded: u32,
+    pub closed: bool,
+}
+
+pub(super) struct Secondary;
+
+impl Drop for SecondarySurface {
+    fn drop(&mut self) {
+        self.layer.destroy();
+        self.surface.destroy();
+    }
 }
 
 pub(super) fn connect(
@@ -144,6 +165,78 @@ pub(super) fn connect(
 }
 
 impl State {
+    #[allow(dead_code)] // Only the shared-session diagnostic creates a second root.
+    pub fn add_secondary(&mut self, output: &str, qh: &QueueHandle<Self>) -> Result<()> {
+        ensure!(
+            self.secondary.is_none(),
+            "secondary private surface already exists"
+        );
+        let output = self
+            .outputs
+            .values()
+            .find(|(_, name)| name == output)
+            .map(|(proxy, _)| proxy.clone())
+            .context("secondary private output was not advertised")?;
+        let surface = self
+            .compositor
+            .as_ref()
+            .context("compositor missing")?
+            .create_surface(qh, ());
+        let empty = self
+            .compositor
+            .as_ref()
+            .context("compositor missing")?
+            .create_region(qh, ());
+        surface.set_input_region(Some(&empty));
+        empty.destroy();
+        let layer = self
+            .shell
+            .as_ref()
+            .context("layer shell missing")?
+            .get_layer_surface(
+                &surface,
+                Some(&output),
+                zwlr_layer_shell_v1::Layer::Overlay,
+                "openwall-private-egl-secondary".into(),
+                qh,
+                Secondary,
+            );
+        layer.set_size(0, 0);
+        layer.set_anchor(
+            zwlr_layer_surface_v1::Anchor::Top
+                | zwlr_layer_surface_v1::Anchor::Bottom
+                | zwlr_layer_surface_v1::Anchor::Left
+                | zwlr_layer_surface_v1::Anchor::Right,
+        );
+        layer.set_exclusive_zone(-1);
+        layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
+        surface.commit();
+        self.secondary = Some(SecondarySurface {
+            surface,
+            layer,
+            configured: None,
+            dirty: true,
+            pending_feedback: false,
+            presented: 0,
+            discarded: 0,
+            closed: false,
+        });
+        Ok(())
+    }
+
+    #[allow(dead_code)] // Only the shared-session diagnostic creates a second root.
+    pub fn secondary_feedback(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
+        let secondary = self
+            .secondary
+            .as_mut()
+            .context("secondary surface missing")?;
+        self.presentation
+            .as_ref()
+            .context("presentation missing")?
+            .feedback(&secondary.surface, qh, Secondary);
+        secondary.pending_feedback = true;
+        Ok(())
+    }
     pub fn request_feedback(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
         self.request_frame_feedback(qh, 0)
     }
@@ -188,6 +281,7 @@ impl State {
 impl Drop for State {
     fn drop(&mut self) {
         // Caller drops EGLSurface and wl_egl_window before destroying these roots.
+        self.secondary.take();
         if let Some(pointer) = self.virtual_pointer.take() {
             pointer.destroy();
         }
@@ -221,6 +315,59 @@ impl Drop for State {
         for (_, (output, _)) in std::mem::take(&mut self.outputs) {
             if output.version() >= 3 {
                 output.release();
+            }
+        }
+    }
+}
+
+impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, Secondary> for State {
+    fn event(
+        state: &mut Self,
+        layer: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+        event: zwlr_layer_surface_v1::Event,
+        _: &Secondary,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let Some(secondary) = state.secondary.as_mut() {
+            match event {
+                zwlr_layer_surface_v1::Event::Configure {
+                    serial,
+                    width,
+                    height,
+                } => {
+                    layer.ack_configure(serial);
+                    secondary.configured = Some((width, height));
+                    secondary.dirty = true;
+                }
+                zwlr_layer_surface_v1::Event::Closed => secondary.closed = true,
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, Secondary> for State {
+    fn event(
+        state: &mut Self,
+        _: &wp_presentation_feedback::WpPresentationFeedback,
+        event: wp_presentation_feedback::Event,
+        _: &Secondary,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let Some(secondary) = state.secondary.as_mut() {
+            match event {
+                wp_presentation_feedback::Event::Presented { .. } => {
+                    secondary.presented += 1;
+                    secondary.pending_feedback = false;
+                }
+                wp_presentation_feedback::Event::Discarded => {
+                    secondary.discarded += 1;
+                    secondary.pending_feedback = false;
+                    secondary.dirty = true;
+                }
+                _ => {}
             }
         }
     }

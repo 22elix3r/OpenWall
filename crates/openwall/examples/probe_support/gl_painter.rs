@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail, ensure};
 use glow::HasContext;
 
 pub struct Painter<'a> {
+    selected: Api,
     gl: &'a glow::Context,
     sampler: Option<glow::NativeSampler>,
     program: Option<glow::NativeProgram>,
@@ -14,6 +15,7 @@ pub struct Painter<'a> {
 impl<'a> Painter<'a> {
     pub fn new(gl: &'a glow::Context, selected: Api) -> Result<Self> {
         let mut painter = Self {
+            selected,
             gl,
             sampler: None,
             program: None,
@@ -105,6 +107,11 @@ void main() { color = texture(source_texture, uv); }
         unsafe {
             let program = self.program.context("owned program missing")?;
             gl.bind_framebuffer(glow::FRAMEBUFFER, framebuffer);
+            if framebuffer.is_none() {
+                self.selected.select_default_draw_buffer(gl);
+            } else {
+                gl.draw_buffers(&[glow::COLOR_ATTACHMENT0]);
+            }
             gl.bind_vertex_array(self.vertex_array);
             gl.use_program(Some(program));
             gl.uniform_2_f32(
