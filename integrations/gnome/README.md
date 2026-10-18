@@ -42,7 +42,8 @@ This test setup is not an implementation of application/content sandboxing.
 
 The actual repository module is imported and tested for scene pixels, connection
 ownership, an unrelated client with an identical title, startup cancellation, fallback,
-worker crashes, presentation actor loss, video motion/loops, bounded log draining,
+worker crashes, presentation actor loss, video motion/loops, invalid video without mapping,
+initial XDG configure/geometry correctness, bounded log draining,
 unresponsive-worker termination and compositor loss. The test stores only explicitly
 requested artifacts. This full GNOME test is currently opt-in, not part of hosted CI.
 
@@ -66,10 +67,11 @@ provide the complete desktop/app-list role needed here. Existing implementations
 version-sensitive shell-method overrides. This probe deliberately leaves those out
 while their compatibility and interaction with other extensions are evaluated.
 
-The native GStreamer automatic-window path displays moving video, but Mutter 49 reports
-an initial configure acknowledgment warning. A supported backend must qualify or replace
-that path with an OpenWall-owned XDG parent and native overlay before claiming reliable
-video integration. Hardware DMA-BUF import/synchronization, power policy, screen locking,
+The worker now owns its XDG root and gives GStreamer a separate container subsurface.
+Only OpenWall commits the root, which remains unmapped until decoded data reaches the
+sink. Moving video passes without Mutter's initial configure/geometry warnings, and
+invalid input exits without mapping a black window. Data readiness is still weaker than
+confirmed presentation. Hardware DMA-BUF import/synchronization, power policy, screen locking,
 overview/desktop icons, mixed-scale monitors, shell restarts and sleep/wake remain open.
 Only GNOME Shell 49.10 / Mutter 49.8 has been exercised here; other versions are unqualified.
 

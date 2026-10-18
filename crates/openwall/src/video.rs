@@ -7,7 +7,10 @@ use std::{
     io::Write,
     os::unix::net::UnixStream,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -15,6 +18,7 @@ pub struct Player {
     pipeline: gst::Element,
     bus: gst::Bus,
     overlay: Option<gstreamer_video::VideoOverlay>,
+    first_buffer: Arc<AtomicBool>,
 }
 
 impl Player {
@@ -33,6 +37,7 @@ impl Player {
             .context("GStreamer playbin is missing")?;
         pipeline.set_property_from_str("flags", "video");
         let mut native_overlay = None;
+        let first_buffer = Arc::new(AtomicBool::new(false));
         if let Some((display, surface, width, height)) = native {
             let sink = gst::ElementFactory::make("waylandsink")
                 .build()
@@ -42,7 +47,9 @@ impl Player {
             let setup_bus = gst::Bus::new();
             sink.set_bus(Some(&setup_bus));
             if let Some(pad) = sink.static_pad("sink") {
-                pad.add_probe(gst::PadProbeType::BUFFER, |pad, info| {
+                let ready = first_buffer.clone();
+                let buffer_wake = wake.clone();
+                pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
                     let dmabuf = info.buffer().is_some_and(|buffer| {
                         buffer.n_memory() > 0 && buffer.peek_memory(0).is_type("DMABuf")
                     });
@@ -52,6 +59,12 @@ impl Player {
                             .map(|x| x.to_string())
                             .unwrap_or_default()
                     );
+                    ready.store(true, Ordering::Relaxed);
+                    if let Some(wake) = &buffer_wake
+                        && let Ok(mut writer) = wake.lock()
+                    {
+                        let _ = writer.write_all(&[1]);
+                    }
                     gst::PadProbeReturn::Remove
                 });
             }
@@ -121,6 +134,7 @@ impl Player {
             pipeline,
             bus,
             overlay: native_overlay,
+            first_buffer,
         };
         player
             .pipeline
@@ -151,6 +165,10 @@ impl Player {
             }
         }
         Ok(())
+    }
+
+    pub fn has_first_buffer(&self) -> bool {
+        self.first_buffer.load(Ordering::Relaxed)
     }
 
     pub fn resize(&self, width: u32, height: u32) -> Result<()> {

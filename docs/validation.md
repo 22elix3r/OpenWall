@@ -108,14 +108,15 @@ package was copied into temporary XDG data; a private D-Bus session activated on
 ActivityManager. Neither the running Hyprland session nor its configuration was used.
 
 - Original quadrant pixels from a Rust worker appeared inside the Plasma wallpaper.
-- A repository-owned desktop widget appeared above it and received a virtual pointer
-  click through both nested desktops; its visible state changed after the click.
+- A repository-owned desktop widget appeared above both scenes and video and received a
+  virtual pointer click through both nested desktops; its visible state changed.
 - Duplicate toplevel rejection preserved the original wallpaper and host process.
 - Graceful worker exit, SIGKILL, reconnection and dark fallback passed.
 - Terminating the presentation host caused its connected worker to fail promptly.
 - Fractional output changes and logical host resizing preserved visible scene pixels.
 - Native GStreamer Wayland video appeared and looped, including after host resizing,
   without replacing the decoder or initializing a separate scene GPU.
+- Video SIGKILL restored the fallback; OpenWall's native XDG geometry followed host resize.
 - A wallpaper loaded in a plain preview window did not create a compositor socket.
 
 Run the generic Qt host test with `python3 scripts/test_plasma_bridge.py`; it exercises
@@ -143,6 +144,8 @@ session kept the running desktop and real OS-service buses out of the test.
   and never mapping was forcibly reaped after its startup deadline.
 - Moving GStreamer VP9 video through a background clone, at least two loops, and no
   scene-GPU initialization. A software plugin set excluded host GPU-driver probing.
+- Native XDG video initialization emitted no initial configure or invalid-geometry
+  warnings. Invalid video exited without ever mapping a black window.
 - A worker outside the test PID namespace failed promptly when its compositor died.
 
 The launcher must explicitly close its retained copy of the Wayland socket peer after
@@ -153,9 +156,13 @@ the background actor at map time, with worker cleanup if that actor disappears.
 
 Run `python3 scripts/test_gnome_headless.py` on a GNOME 49 test host; see the
 [runtime requirements and boundaries](../integrations/gnome/README.md). This test is
-opt-in; hosted CI syntax checks do not qualify GNOME behavior. The automatic GStreamer
-window path still emits Mutter's initial configure warning, and normal app-list/overview
-roles, monitor/session transitions and hardware rendering remain unqualified. Normal
+opt-in; hosted CI syntax checks do not qualify GNOME behavior. OpenWall now owns the XDG
+root and isolates GStreamer's parent commits in a separate container subsurface. Both
+parents use a single black pixel with viewporter, backed by anonymous memory. The generic
+Qt bridge also passed with the extracted GStreamer 1.24.2 sink/helper and Sway 1.9, including
+resize without decoder replacement and crash fallback. These tests do not confirm
+first-frame transactional presentation. Normal app-list/overview roles, monitor/session
+transitions and hardware rendering remain unqualified. Normal
 GNOME Apply is still unavailable. These results establish presentation feasibility.
 
 ## Required before support claims

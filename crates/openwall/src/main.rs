@@ -40,7 +40,7 @@ enum Command {
         #[arg(long)]
         allow_partial: bool,
     },
-    /// Open an actual GPU-rendered wallpaper in a separate preview window.
+    /// Open a wallpaper in a separate preview window.
     Preview {
         path: Option<PathBuf>,
         #[arg(long)]
@@ -181,6 +181,10 @@ fn play_video(
     {
         if desktop {
             wayland::run_video(path, output, duration)
+        } else if std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var_os("WAYLAND_SOCKET").is_some()
+        {
+            wayland::video_window::run(path, duration)
         } else {
             video::preview(&path, duration)
         }
