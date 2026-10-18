@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+use super::decoder_trace;
 use anyhow::{Context, Result, bail, ensure};
 use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_gl::{self as gst_gl, prelude::*};
@@ -30,6 +31,7 @@ pub struct Media {
     sink: gstreamer_app::AppSink,
     bus: gst::Bus,
     latest: Arc<Mutex<Latest>>,
+    decoder_buffers: decoder_trace::DecoderBuffers,
     pub eos: bool,
 }
 
@@ -107,6 +109,7 @@ impl Media {
             gst::BusSyncReply::Pass
         });
         let media = Self {
+            decoder_buffers: decoder_trace::watch_decoder_buffers(&pipeline)?,
             pipeline,
             sink,
             bus,
@@ -189,6 +192,14 @@ impl Media {
             }
         }
         Ok(result)
+    }
+
+    pub fn decoder_buffers(&self) -> Result<serde_json::Value> {
+        let buffers = self
+            .decoder_buffers
+            .lock()
+            .map_err(|_| anyhow::anyhow!("decoder trace poisoned"))?;
+        Ok(serde_json::to_value(&*buffers)?)
     }
 }
 

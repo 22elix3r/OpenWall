@@ -7,12 +7,13 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
 
 from test_wayland_headless import Session, wait_for
-from video_color_fixtures import WIDTH, HEIGHT, patches, original_yuv, expected_rgba
+from video_color_fixtures import WIDTH, HEIGHT, patches, original_yuv, expected_rgba, enlarged_yuv
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAMES, FPS = 12, 2
@@ -22,12 +23,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/examples/native_gl_video_probe")
     parser.add_argument("--gl-api", choices=["gles", "desktop"], default="desktop")
+    parser.add_argument("--nvidia", action="store_true", help="explicitly enable NVIDIA decode/render in the private headless compositor")
+    parser.add_argument("--render-node", type=Path, help="existing NVIDIA DRM render node; requires --nvidia")
     args = parser.parse_args()
+    if args.nvidia and args.gl_api != "desktop":
+        parser.error("NVIDIA GPU-path qualification requires --gl-api desktop")
+    if args.render_node and not args.nvidia:
+        parser.error("--render-node requires --nvidia")
     binary = args.binary.resolve(strict=True)
     sway = shutil.which("sway")
     assert sway and shutil.which("swaymsg") and shutil.which("grim") and shutil.which("ffmpeg")
-    mesa = Path("/usr/share/glvnd/egl_vendor.d/50_mesa.json")
-    assert mesa.is_file(), "Mesa EGL configuration is required"
+    vendor = Path("/usr/share/glvnd/egl_vendor.d") / ("10_nvidia.json" if args.nvidia else "50_mesa.json")
+    assert vendor.is_file(), "the selected EGL vendor configuration is required"
+    render_env = None
+    render_node = None
+    if args.nvidia:
+        candidates = [Path("/dev/dri") / node.name for node in sorted(Path("/sys/class/drm").glob("renderD*"))
+                      if (node / "device/vendor").is_file() and (node / "device/vendor").read_text().strip() == "0x10de"]
+        assert args.render_node or len(candidates) == 1, "select an existing NVIDIA render node with --render-node"
+        render_node = (args.render_node or candidates[0]).resolve(strict=True)
+        assert render_node in candidates and stat.S_ISCHR(render_node.stat().st_mode), "not an NVIDIA DRM render node"
+        assert (Path("/sys/class/drm") / render_node.name / "device/driver").resolve().name == "nvidia", "the existing NVIDIA driver is required"
+        render_env = {"WLR_RENDERER": "gles2", "WLR_RENDER_DRM_DEVICE": str(render_node),
+                      "LIBGL_ALWAYS_SOFTWARE": "0", "__EGL_VENDOR_LIBRARY_FILENAMES": str(vendor)}
     guard_env = os.environ.copy()
     guard_env.pop("OPENWALL_PRIVATE_COMPOSITOR", None)
     rejected = subprocess.run([str(binary), "missing.webm", "--output", "never-connect"], env=guard_env,
@@ -41,13 +59,14 @@ def main():
             frame = base[index % len(base):] + base[:index % len(base)]
             frame[0] = (16 + 8 * index, 128, 128)
             colors.append(frame)
-        raw_bytes = b"".join(original_yuv(frame) for frame in colors)
+        scale = 2 if args.nvidia else 1
+        raw_bytes = b"".join((enlarged_yuv if args.nvidia else original_yuv)(frame) for frame in colors)
         raw = directory / "original.yuv"
         raw.write_bytes(raw_bytes)
         video = directory / "original ! name='native'.webm"
         tags = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
         subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pixel_format", "yuv420p",
-                        "-video_size", f"{WIDTH}x{HEIGHT}", "-framerate", str(FPS), *tags, "-i", str(raw),
+                        "-video_size", f"{WIDTH * scale}x{HEIGHT * scale}", "-framerate", str(FPS), *tags, "-i", str(raw),
                         "-frames:v", str(FRAMES), "-an", "-c:v", "libvpx-vp9", "-lossless", "1", *tags, str(video)],
                        check=True, capture_output=True, timeout=30)
         decoded = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(video),
@@ -56,11 +75,13 @@ def main():
         assert decoded == raw_bytes, "encoder changed original YUV samples"
         session_dir = directory / "session"
         session_dir.mkdir()
-        session = Session(session_dir, sway, software_vulkan=False)
+        session = Session(session_dir, sway, software_vulkan=False, renderer_env=render_env)
         session.env.update(OPENWALL_PRIVATE_COMPOSITOR="1", EGL_PLATFORM="wayland", LIBGL_ALWAYS_SOFTWARE="1",
-                           __EGL_VENDOR_LIBRARY_FILENAMES=str(mesa), GST_GL_WINDOW="surfaceless", GST_GL_PLATFORM="egl",
-                           GST_GL_API="opengl3" if args.gl_api == "desktop" else "gles2", GST_PLUGIN_FEATURE_RANK="vp9dec:MAX",
+                           __EGL_VENDOR_LIBRARY_FILENAMES=str(vendor), GST_GL_WINDOW="surfaceless", GST_GL_PLATFORM="egl",
+                           GST_GL_API="opengl3" if args.gl_api == "desktop" else "gles2", GST_PLUGIN_FEATURE_RANK=("nvvp9dec:MAX" if args.nvidia else "vp9dec:MAX"),
                            GST_REGISTRY_1_0=str(directory / "registry.bin"))
+        if args.nvidia:
+            session.env.update(LIBGL_ALWAYS_SOFTWARE="0", GST_DEBUG="nvdecoder:5", GST_DEBUG_NO_COLOR="1")
         try:
             session.connect()
             first, second = sorted(item["name"] for item in session.outputs() if item["active"])
@@ -142,14 +163,25 @@ def main():
             assert child.returncode == 0, session.diagnostics()
             report = json.loads(stdout)
             assert report["scope"] == "shared_video_into_owned_private_wayland_surface", report
-            assert "vp9dec" in report["decoders"], report
+            assert ("nvvp9dec" if args.nvidia else "vp9dec") in report["decoders"], report
+            decoder = next(item for item in report["decoder_buffers"].values()
+                           if item["factory"] == ("nvvp9dec" if args.nvidia else "vp9dec"))
+            assert decoder["memories"] > 0 and decoder["allocator_types"], report
+            assert decoder["all_memory_is_gl"] == args.nvidia, report
             assert "video/x-raw(memory:GLMemory)" in report["input_memory"]["caps"], report
             assert report["input_memory"]["memory"]["shared_context"] and report["input_memory"]["memory"]["producer_sync_meta"], report
             assert report["completed_loops"] == 2 and not report["interrupted"], report
             assert len(seen) >= 4, ("fixture did not visibly animate", seen)
             assert report["consumer_cpu_buffer_maps"] == report["consumer_readbacks"] == report["consumer_offscreen_targets"] == 0, report
-            assert report["egl_context_creations"] == 1 and report["source_size"] == [WIDTH, HEIGHT], report
-            assert report["gl"]["api"] == args.gl_api and "llvmpipe" in report["gl"]["renderer"].lower(), report
+            assert report["egl_context_creations"] == 1 and report["source_size"] == [WIDTH * scale, HEIGHT * scale], report
+            assert report["gl"]["api"] == args.gl_api, report
+            assert ("NVIDIA" in report["gl"]["vendor"] if args.nvidia else "llvmpipe" in report["gl"]["renderer"].lower()), report
+            if args.nvidia:
+                assert "video/x-raw(memory:GLMemory)" in decoder["caps"], report
+                native_log = session.text(log)
+                assert "using GL memory" in native_log and "fallback to system memory" not in native_log, session.diagnostics()
+                compositor_log = session.text(session.log)
+                assert "NVIDIA" in compositor_log and str(render_node) in compositor_log, compositor_log[-16_384:]
             assert report["witness_button_events"] >= clicks and report["input_region"] == "empty", report
             fences = report["consumer_fences"]
             assert fences["submitted"] == fences["retired"] == len(report["frames"]), report
@@ -203,7 +235,9 @@ def main():
             raise
         finally:
             session.close()
-    print(json.dumps({"native_gl_video": "passed", "gl_api": args.gl_api,
+    print(json.dumps({"native_gl_video": "passed", "gl_api": args.gl_api, "nvidia": args.nvidia,
+                      "render_node": str(render_node) if render_node else None,
+                      "gl": report["gl"], "gstreamer": report["gstreamer"],
                       "visible_frame_ids": sorted(seen), "max_compositor_channel_error": maximum_error,
                       "presented": report["presented"], "frames": len(report["frames"]),
                       "checks": ["original animated pixels", "per-frame presentation feedback", "loop after draining samples",

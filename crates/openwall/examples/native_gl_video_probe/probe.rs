@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#[path = "../probe_support/decoder_trace.rs"]
+mod decoder_trace;
 #[path = "../owned_egl_wayland_probe/egl_window.rs"]
 #[allow(dead_code)] // The static quadrant entry point also uses this native owner.
 mod egl_window;
@@ -318,7 +320,7 @@ pub fn run() -> Result<()> {
         "presented":state.presented,"discarded":state.discarded,"completed_loops":completed_loops,
         "interrupted":stopped.load(Ordering::Relaxed),"source_size":source_size,"input_memory":first_memory,
         "consumer_cpu_buffer_maps":0,"consumer_readbacks":0,"consumer_offscreen_targets":0,
-        "decoders":media.decoders()?,
+        "decoders":media.decoders()?,"decoder_buffers":media.decoder_buffers()?,
         "delivery":{"received":received,"replaced":replaced,"latest_slot_limit":1},
         "consumer_fences":{"submitted":records.len(),"retired":retired,"peak_in_flight":peak,"limit":3,"cleanup_finish_calls":finishes.get()}});
     eprintln!("Native GL video removing private surfaces");

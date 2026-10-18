@@ -35,7 +35,7 @@ def wait_for(check, description, timeout=15):
 
 
 class Session:
-    def __init__(self, directory, sway, software_vulkan):
+    def __init__(self, directory, sway, software_vulkan, *, renderer_env=None):
         self.directory = directory
         runtime = directory / "runtime"
         runtime.mkdir(mode=0o700)
@@ -55,11 +55,15 @@ class Session:
                         WLR_HEADLESS_OUTPUTS="2", WLR_RENDERER="pixman",
                         XDG_CURRENT_DESKTOP="sway", XDG_CONFIG_HOME=str(directory / "config"),
                         XDG_CACHE_HOME=str(directory / "cache"))
+        # Hardware diagnostics may select an existing render node/driver only for
+        # this private headless session. Defaults retain the software renderer.
+        self.env.update(renderer_env or {})
         config = directory / "sway.conf"
         config.write_text("xwayland disable\nfocus_follows_mouse no\n"
                           "output * mode 640x360\nseat * hide_cursor 10\n")
         self.log = (directory / "sway.log").open("w+")
-        self.process = subprocess.Popen([sway, "--config", str(config), "--unsupported-gpu"],
+        self.process = subprocess.Popen([sway, "--config", str(config), "--unsupported-gpu",
+                                         *(["--debug"] if renderer_env else [])],
                                         env=self.env, stdout=self.log, stderr=self.log)
         self.workers = []
         self.logs = []
