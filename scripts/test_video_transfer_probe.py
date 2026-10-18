@@ -51,13 +51,18 @@ def main():
             result = invoke(mode, extra_env=extra)
             assert result.returncode == 0, result.stderr[-16_384:]
             report = json.loads(result.stdout)
-            assert report["status"] == "passed" and report["scope"] == "decode_convert_fake_sink", report
+            assert report["status"] == "passed" and report["scope"] == "decode_convert_cpu_consumer", report
             assert report["mode"] == mode and report["loops"] >= 1, report
             assert report["sample_seconds"] >= 3, report
             assert math.isfinite(report["cpu_percent_one_core"]) and report["cpu_percent_one_core"] >= 0, report
             assert "format=(string)RGBA" in report["first_sink_buffer"]["caps"], report
             assert report["first_sink_buffer"]["bytes"] > 0, report
+            assert report["first_sink_buffer"]["allocator_types"], report
             assert not report["first_sink_buffer"]["all_memories_dmabuf"], report
+            assert report["consumer"]["operation"] == "map_and_copy_each_frame", report
+            assert report["consumer"]["total_frames_copied"] >= 2, report
+            assert report["consumer"]["total_bytes_copied"] == (
+                report["consumer"]["total_frames_copied"] * report["first_sink_buffer"]["bytes"]), report
             assert any(item["factory"] == "vp9dec" for item in report["decoders"]), report
 
         for mode in ["gl-download", "dmabuf"]:

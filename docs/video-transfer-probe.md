@@ -1,9 +1,10 @@
 # Windowless video transfer probe
 
 The Rust `video_transfer_probe` example isolates decoding and conversion from desktop
-presentation. A clock-paced fake sink consumes frames; it creates no wallpaper or native
-output window. This M0 diagnostic helps distinguish CPU conversion, GPU conversion with
-readback, and successful DMA-BUF delivery. Use the [worker benchmark](video-performance.md)
+presentation. A clock-paced sink creates no wallpaper or native output window. CPU-bound
+modes explicitly map and copy each frame into one bounded reusable CPU buffer. This M0
+diagnostic helps distinguish CPU conversion, GPU conversion with readback, and successful
+DMA-BUF delivery. Use the [worker benchmark](video-performance.md)
 to measure the full layer-shell path separately.
 
 Build on Linux with the normal video dependencies:
@@ -15,9 +16,9 @@ target/release/examples/video_transfer_probe /tmp/openwall-loop.webm --mode cpu 
 
 | Mode | Explicit conversion/sink chain | Required environment |
 | --- | --- | --- |
-| `cpu` | `videoconvert` → system-memory RGBA → fake sink | None |
-| `gl-download` | `glupload` → `glcolorconvert` → `gldownload` → system-memory RGBA → fake sink | `GST_GL_WINDOW=surfaceless` |
-| `dmabuf` | Same GL chain → DMA_DRM with `memory:DMABuf` → fake sink | `GST_GL_WINDOW=surfaceless` |
+| `cpu` | `videoconvert` → RGBA → CPU map/copy → paced sink | None |
+| `gl-download` | `glupload` → `glcolorconvert` → `gldownload` → RGBA → CPU map/copy → paced sink | `GST_GL_WINDOW=surfaceless` |
+| `dmabuf` | Same GL chain → DMA_DRM with `memory:DMABuf` → unmapped fake sink | `GST_GL_WINDOW=surfaceless` |
 
 The GL modes refuse to start without the surfaceless setting. They require the distribution's
 GStreamer OpenGL plugin (`gstreamer1.0-gl` on Ubuntu). A hardware probe exercised locally used:
@@ -42,19 +43,26 @@ Only fixed, repository-owned pipeline descriptions are evaluated.
 
 A completed run prints JSON with process CPU time as a percentage of one core, actual
 sample duration, warm-up, loop count, GStreamer version, decoder output caps, and the first
-sink buffer's caps, byte count, memory count and all-memory DMA-BUF check. Process CPU time
-includes native media threads. The probe waits on media events and deadlines, and SIGINT
+sink buffer's caps, byte count, allocator types, memory count and all-memory DMA-BUF check.
+CPU-bound modes also report total copied bytes/frames across startup, warm-up and sampling.
+Copy buffers are limited to 256 MiB; DMA-BUF mode never maps or copies the exported data.
+Process CPU time includes native media threads. The probe waits on media events and deadlines, and SIGINT
 wakes that wait. Errors and interrupted/incomplete samples exit nonzero without printing a
 successful report. The 15-second startup deadline covers missing data events; use an external
 process timeout to bound a blocked native-library call or teardown.
 
 Record the build/media hashes, complete driver/plugin environment and GPU/compositor/driver
-versions alongside results. Repeat warmed release runs. The probe performs no pixel readback
-for verification and no color comparison; a GL pipeline can negotiate different color
+versions alongside results. Repeat warmed release runs. RGBA caps alone do not imply
+system-memory backing: GL download can return `GLMemoryPBO`, deferring final CPU access
+until mapping. The explicit CPU consumer includes that map/copy cost, unlike a bare fake
+sink. It adds a controlled full-buffer copy to both CPU-bound modes; it does not reproduce
+the real Wayland sink's buffer-pool allocation or compositor work.
+
+The probe performs no pixel/color comparison; a GL pipeline can negotiate different color
 metadata from a CPU pipeline. Similar caps or successful playback do not establish matching
-colors. Final GL-download frames are still system memory even when the decoder outputs
-`GLMemory`. DMA-BUF delivery to a fake sink does not establish compositor import, fence
-correctness, end-to-end zero-copy or lower energy use.
+colors. The GL-download mode consumes CPU-visible bytes even when the decoder outputs
+`GLMemory` and the final allocator is PBO-backed. DMA-BUF delivery to a fake sink does not
+establish compositor import, fence correctness, end-to-end zero-copy or lower energy use.
 
 ## Regression checks
 

@@ -24,7 +24,7 @@ mod probe {
     }
 
     #[derive(Parser)]
-    #[command(about = "Measure decode/conversion into a fake sink; creates no wallpaper")]
+    #[command(about = "Probe video conversion and buffer transfer without a desktop window")]
     struct Args {
         video: PathBuf,
         #[arg(long, value_enum, default_value_t = Mode::Cpu)]
@@ -39,11 +39,47 @@ mod probe {
     struct BufferReport {
         caps: String,
         memories: usize,
+        allocator_types: Vec<String>,
         bytes: usize,
         all_memories_dmabuf: bool,
     }
 
     struct Playing(gst::Element);
+
+    #[derive(Default)]
+    struct Consumer {
+        scratch: Vec<u8>,
+        frames: u64,
+        bytes: u64,
+        error: Option<String>,
+    }
+
+    impl Consumer {
+        fn copy(&mut self, buffer: &gst::BufferRef) -> Result<()> {
+            ensure!(
+                buffer.size() > 0 && buffer.size() <= 256 * 1024 * 1024,
+                "CPU consumer buffer exceeds limits"
+            );
+            let mapped = buffer
+                .map_readable()
+                .context("could not map CPU-bound frame")?;
+            let data = mapped.as_slice();
+            ensure!(
+                !data.is_empty() && data.len() <= 256 * 1024 * 1024,
+                "CPU consumer mapping exceeds limits"
+            );
+            if data.len() > self.scratch.len() {
+                self.scratch
+                    .try_reserve_exact(data.len() - self.scratch.len())?;
+            }
+            self.scratch.resize(data.len(), 0);
+            self.scratch.copy_from_slice(data);
+            std::hint::black_box(&self.scratch);
+            self.frames += 1;
+            self.bytes += data.len() as u64;
+            Ok(())
+        }
+    }
 
     impl Drop for Playing {
         fn drop(&mut self) {
@@ -141,6 +177,15 @@ mod probe {
                             .map(|caps| caps.to_string())
                             .unwrap_or_default(),
                         memories: count,
+                        allocator_types: (0..count)
+                            .map(|index| {
+                                buffer
+                                    .peek_memory(index)
+                                    .allocator()
+                                    .map(|allocator| allocator.memory_type().to_string())
+                                    .unwrap_or_else(|| "unknown".into())
+                            })
+                            .collect(),
                         bytes: buffer.size(),
                         all_memories_dmabuf: count > 0
                             && (0..count).all(|index| buffer.peek_memory(index).is_type("DMABuf")),
@@ -153,6 +198,46 @@ mod probe {
                     gst::PadProbeReturn::Remove
                 },
             );
+        let consumer = Arc::new(Mutex::new(Consumer::default()));
+        if !matches!(args.mode, Mode::Dmabuf) {
+            let consume = consumer.clone();
+            let consume_bus = bus.clone();
+            sink.static_pad("sink")
+                .context("fake sink has no pad")?
+                .add_probe(
+                    gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                    move |_, info| {
+                        let failed = {
+                            let Ok(mut state) = consume.lock() else {
+                                wake(&consume_bus);
+                                return gst::PadProbeReturn::Drop;
+                            };
+                            if state.error.is_some() {
+                                return gst::PadProbeReturn::Drop;
+                            }
+                            let result = if let Some(buffer) = info.buffer() {
+                                state.copy(buffer)
+                            } else if let Some(list) = info.buffer_list() {
+                                list.iter().try_for_each(|buffer| state.copy(buffer))
+                            } else {
+                                Ok(())
+                            };
+                            if let Err(error) = result {
+                                state.error = Some(format!("{error:#}"));
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if failed {
+                            wake(&consume_bus);
+                            gst::PadProbeReturn::Drop
+                        } else {
+                            gst::PadProbeReturn::Ok
+                        }
+                    },
+                );
+        }
         let stopped = Arc::new(AtomicBool::new(false));
         let stop_flag = stopped.clone();
         let stop_bus = bus.clone();
@@ -169,6 +254,14 @@ mod probe {
         playing.0.set_state(gst::State::Playing)?;
         let (elapsed, cpu) = loop {
             ensure!(!stopped.load(Ordering::Relaxed), "probe interrupted");
+            let error = consumer
+                .lock()
+                .map_err(|_| anyhow::anyhow!("CPU consumer state poisoned"))?
+                .error
+                .clone();
+            if let Some(error) = error {
+                bail!("CPU consumption failed: {error}");
+            }
             let now = Instant::now();
             let ready = first
                 .lock()
@@ -231,8 +324,9 @@ mod probe {
                 "DMA-BUF probe received non-DMA-BUF memory"
             );
         }
-        let result = serde_json::json!({
-            "schema_version": 1, "status": "passed", "scope": "decode_convert_fake_sink",
+        let mut result = serde_json::json!({
+            "schema_version": 1, "status": "passed",
+            "scope": if matches!(args.mode, Mode::Dmabuf) { "decode_convert_unmapped_dmabuf" } else { "decode_convert_cpu_consumer" },
             "mode": args.mode, "gstreamer": gst::version_string().to_string(), "warmup_seconds": args.warmup,
             "sample_seconds": elapsed, "cpu_percent_one_core": cpu / elapsed * 100.0,
             "startup_to_sink_buffer_seconds": ready.duration_since(started).as_secs_f64(),
@@ -250,6 +344,19 @@ mod probe {
             .set_state(gst::State::Null)
             .context("could not stop probe")?;
         drop(playing);
+        let consumer = consumer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("CPU consumer state poisoned"))?;
+        ensure!(
+            consumer.error.is_none(),
+            "CPU consumption failed: {}",
+            consumer.error.as_deref().unwrap_or_default()
+        );
+        result["consumer"] = serde_json::json!({
+            "operation": if matches!(args.mode, Mode::Dmabuf) { "unmapped" } else { "map_and_copy_each_frame" },
+            "total_frames_copied": consumer.frames,
+            "total_bytes_copied": consumer.bytes,
+        });
         println!("{}", serde_json::to_string_pretty(&result)?);
         Ok(())
     }
