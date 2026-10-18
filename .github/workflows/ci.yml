@@ -42,7 +42,7 @@ jobs:
       - run: cargo fmt --all --check
       - name: Integration probe syntax
         run: |
-          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/test_video_transfer_probe.py
+          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/test_video_transfer_probe.py scripts/test_video_color.py
           node --input-type=module --check < integrations/gnome/presentation.js
       - name: Measurement harness process tests
         run: python3 -m unittest discover -s scripts/tests -v
@@ -65,8 +65,12 @@ jobs:
       - name: Windowless video transfer probe
         if: runner.os == 'Linux'
         run: |
+          cargo test -p openwall --example video_transfer_probe --locked
           cargo build -p openwall --example video_transfer_probe --locked
           /usr/bin/python3 scripts/test_video_transfer_probe.py --software-gl --video-fixture /tmp/openwall-loop.webm
+      - name: SDR video conversion regressions
+        if: runner.os == 'Linux'
+        run: /usr/bin/python3 scripts/test_video_color.py --software-gl
       - name: GUI startup
         env:
           QT_QPA_PLATFORM: offscreen
