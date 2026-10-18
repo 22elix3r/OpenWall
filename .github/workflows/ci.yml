@@ -43,7 +43,7 @@ jobs:
       - run: cargo fmt --all --check
       - name: Integration probe syntax
         run: |
-          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/test_video_transfer_probe.py scripts/video_color_fixtures.py scripts/private_gpu.py scripts/test_video_color.py scripts/test_owned_gl_sequence.py scripts/test_owned_egl_wayland.py scripts/test_shared_egl_session.py scripts/test_staged_egl.py scripts/test_nested_egl.py scripts/test_nvidia_gl_interop.py scripts/test_native_gl_video.py scripts/test_shared_video_outputs.py scripts/test_video_replacement.py scripts/build_wayland_runtime.py scripts/test_wayland_runtime.py
+          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/benchmark_native_gl_video.py scripts/test_video_transfer_probe.py scripts/video_color_fixtures.py scripts/private_gpu.py scripts/test_video_color.py scripts/test_owned_gl_sequence.py scripts/test_owned_egl_wayland.py scripts/test_shared_egl_session.py scripts/test_staged_egl.py scripts/test_nested_egl.py scripts/test_nvidia_gl_interop.py scripts/test_native_gl_video.py scripts/test_shared_video_outputs.py scripts/test_video_replacement.py scripts/build_wayland_runtime.py scripts/test_wayland_runtime.py
           node --input-type=module --check < integrations/gnome/presentation.js
       - name: Measurement harness process tests
         run: python3 -m unittest discover -s scripts/tests -v
@@ -109,6 +109,8 @@ jobs:
           /usr/bin/python3 scripts/test_native_gl_video.py --gl-api gles
           /usr/bin/python3 scripts/test_native_gl_video.py --staged --hold-seconds 11
           /usr/bin/python3 scripts/test_native_gl_video.py --staged --gl-api gles
+          /usr/bin/python3 scripts/benchmark_native_gl_video.py /tmp/openwall-loop.webm --binary target/debug/examples/native_gl_video_probe --width 640 --height 360 --seconds 3 --warmup 0 --repeat 1 --check-interruption
+          /usr/bin/python3 scripts/benchmark_native_gl_video.py /tmp/openwall-loop.webm --binary target/debug/examples/native_gl_video_probe --width 640 --height 360 --seconds 3 --warmup 0 --repeat 1 --gl-api gles --check-interruption
       - name: One decoder survives its first private video output
         if: matrix.os == 'ubuntu-26.04'
         run: |

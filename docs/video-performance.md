@@ -67,3 +67,44 @@ playback baseline at representative 1080p/4K rates.
 
 See the [2026-10-18 exploratory release measurements](video-baseline-2026-10-18.md)
 for the tested revisions, hashes, conditions and remaining limits.
+
+## Native shared-GL process measurements
+
+`scripts/benchmark_native_gl_video.py` runs the optional native video diagnostic in its
+own headless Sway session. It does not connect to a desktop display or bus. The selected
+private output defaults to 1920×1080; the other output must stay unchanged. Native
+surface removal is checked after every trial. Mesa software GL is the default, while
+`--nvidia` explicitly selects an already installed NVIDIA render node/driver and requires
+desktop GL plus decoder GL-memory/caps/log evidence. It changes no driver configuration.
+
+```sh
+cargo build -p openwall --release --example native_gl_video_probe --features video-gl-probe --locked
+python3 scripts/benchmark_native_gl_video.py /tmp/original-tagged-1080p30.webm --nvidia > /tmp/native-gl.json
+```
+
+The probe's `--measure-seconds` mode allows 1–120 measured seconds after 0–30 warm-up
+seconds, starting only after actual presentation feedback and click-through readiness.
+The harness defaults to three 30-second trials with five-second warm-ups. It records
+binary/media hashes, platform/compositor/GL/GStreamer identity, negotiated source memory,
+process CPU time across all native threads, RSS sampled every 250 ms, submissions,
+presentation/discard feedback, sample delivery/replacement and loops. CPU uses the
+process CPU clock and a percentage of one core, which can exceed 100 on multiple threads.
+Reported memory excludes GPU/device memory and other processes; its peak is sampled RSS,
+not the process's all-time high-water mark.
+
+Frame IDs keep increasing while retained frame records are capped at 32 and presentation
+identities at 256. Counters and fences continue beyond those limits. This avoids the
+normal diagnostic's 240-record stop and does not serialize per-frame JSON indefinitely.
+The normal finite/color diagnostic retains its original histories and behavior. An
+incomplete measurement fails instead of reporting a successful partial interval.
+`--check-interruption` additionally checks argument conflicts, the private launch guard,
+intentional early SIGINT rejection and native cleanup; CI uses this with short trials on
+both APIs. CI numbers are correctness checks, not release performance baselines.
+
+No screenshots are taken during the timed interval. Independent animated/color tests
+qualify the same drawing path separately. Presentation feedback counts are events received
+within the sampling window, not a physical-display dropped-frame metric; counts near a
+boundary can differ by an in-flight frame. The measurements exclude compositor CPU, GPU
+work/energy, desktop roles and physical scanout. Driver/GStreamer pools and diagnostic
+validation/logging are included in the video process. Headless runs cannot establish
+wallpaper power use or be directly compared with the earlier desktop/sink benchmarks.
