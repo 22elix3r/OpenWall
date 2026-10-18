@@ -198,6 +198,8 @@ def private_plasma(directory, qdbus):
 
         wait_for(kwin_ready, "private KWin socket", timeout=25)
         env["WAYLAND_DISPLAY"] = "openwall-kwin-test"
+        version = subprocess.check_output(["plasmashell", "--version"], env=env, text=True, timeout=10)
+        assert "plasmashell 6." in version, f"Plasma 6 required: {version}"
         shell = launch(["plasmashell", "--no-respawn"], env, "plasmashell")
 
         def configured():
@@ -364,6 +366,19 @@ def run(args):
                 preview.terminate()
                 preview.wait(timeout=10)
                 print("Plasma plain-window preview guard: passed", flush=True)
+
+            # Losing the trusted host must terminate the worker rather than leave
+            # a background process polling or claiming successful presentation.
+            worker_env = dict(env, WAYLAND_DISPLAY=sockets(directory)[0].name)
+            worker, _ = spawn(session, [str(args.binary), "preview", str(directory / "quadrants.png")],
+                              worker_env, "host-loss")
+            session.expect_frame(worker, "HEADLESS-1")
+            if args.plasma:
+                os.kill(info["plasma_pid"], signal.SIGTERM)
+            else:
+                host.terminate()
+            assert worker.wait(timeout=10) != 0, "host loss reported success"
+            print("Presentation host loss terminates worker: passed", flush=True)
         except BaseException:
             print(session.diagnostics()[-24000:], file=sys.stderr)
             raise
@@ -406,9 +421,6 @@ def main():
         args.pointer_helper = args.pointer_helper.resolve()
         for executable in ["kwin_wayland", "plasmashell", "dbus-run-session", args.qdbus]:
             assert executable and shutil.which(executable), f"Missing Plasma test dependency: {executable}"
-        version = subprocess.check_output(["plasmashell", "--version"], text=True,
-                                          env=dict(os.environ, QT_QPA_PLATFORM="offscreen", KDE_DEBUG="1"))
-        assert "plasmashell 6." in version, f"Plasma 6 required: {version}"
     if args.video_fixture:
         args.video_fixture = args.video_fixture.resolve(strict=True)
     args.binary = args.binary.resolve()

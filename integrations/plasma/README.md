@@ -48,6 +48,7 @@ authentication. Only one XDG toplevel is displayed. A second toplevel is disconn
 after Qt finishes handling its creation request. Popups and input forwarding are
 disabled. Stopping or crashing the worker reveals a static gradient, and another
 worker may reconnect to the same bridge. A new plugin instance gets a fresh socket.
+Losing the presentation host terminates a connected worker with an error.
 
 For the proof, the test starts `openwall preview` with `WAYLAND_DISPLAY` pointing to
 that exact private socket. Scene workers use their existing winit/wgpu presentation.

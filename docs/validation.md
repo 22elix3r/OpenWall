@@ -112,6 +112,7 @@ ActivityManager. Neither the running Hyprland session nor its configuration was 
   click through both nested desktops; its visible state changed after the click.
 - Duplicate toplevel rejection preserved the original wallpaper and host process.
 - Graceful worker exit, SIGKILL, reconnection and dark fallback passed.
+- Terminating the presentation host caused its connected worker to fail promptly.
 - Fractional output changes and logical host resizing preserved visible scene pixels.
 - Native GStreamer Wayland video appeared and looped, including after host resizing,
   without replacing the decoder or initializing a separate scene GPU.
