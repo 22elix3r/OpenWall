@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#[path = "nested.rs"]
+mod nested;
 use anyhow::{Context, Result, ensure};
 use std::{collections::BTreeMap, io::Write, os::fd::AsFd};
 use wayland_client::{
@@ -29,6 +31,7 @@ pub(super) struct State {
     staging_viewport: Option<wp_viewport::WpViewport>,
     staging_buffer: Option<wl_buffer::WlBuffer>,
     staging_published: bool,
+    nested: Option<nested::Tree>,
     layer: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     witness: Option<wl_surface::WlSurface>,
     witness_role: Option<xdg_surface::XdgSurface>,
@@ -174,6 +177,7 @@ pub(super) fn connect(
 impl State {
     #[allow(dead_code)] // Caller first destroys its primary native EGL window.
     pub fn retire_primary(&mut self) {
+        self.nested.take();
         if let Some(layer) = self.layer.take() {
             layer.destroy();
         }
@@ -186,7 +190,10 @@ impl State {
     }
     #[allow(dead_code)] // Explicit staged-child mode; normal probes keep their root.
     pub fn enable_staging(&mut self, qh: &QueueHandle<Self>, intercept: bool) -> Result<()> {
-        ensure!(self.child.is_none(), "staged native child already exists");
+        ensure!(
+            self.child.is_none() && self.nested.is_none(),
+            "staged native child already exists"
+        );
         let compositor = self.compositor.as_ref().context("compositor missing")?;
         let root = self.surface.as_ref().context("root surface missing")?;
         let child = compositor.create_surface(qh, ());
@@ -226,6 +233,9 @@ impl State {
     }
 
     pub fn render_surface(&self) -> Result<&wl_surface::WlSurface> {
+        if let Some(tree) = &self.nested {
+            return tree.surface().context("nested candidate missing");
+        }
         self.child
             .as_ref()
             .or(self.surface.as_ref())
@@ -235,9 +245,12 @@ impl State {
     #[allow(dead_code)] // Advance hidden child state without mapping its parent.
     pub fn flush_staged(&self) -> Result<()> {
         ensure!(
-            self.child.is_some() && !self.staging_published,
-            "staged parent must remain unmapped"
+            (self.child.is_some() || self.nested.is_some()) && !self.staging_published,
+            "candidate parent must remain unmapped"
         );
+        if let Some(tree) = &self.nested {
+            return tree.flush(self.configured.context("layer configure missing")?);
+        }
         // Older wlroots applies cached commits individually and presentation
         // feedback is not part of that cache. Drain priming commits without any
         // feedback while the parent still has no attached buffer.
@@ -247,6 +260,11 @@ impl State {
 
     #[allow(dead_code)] // Only staged mode controls the transparent parent commit.
     pub fn publish_staged(&mut self) -> Result<()> {
+        if let Some(tree) = &self.nested {
+            tree.publish(self.configured.context("layer configure missing")?)?;
+            self.staging_published = true;
+            return Ok(());
+        }
         ensure!(self.child.is_some(), "staged native child missing");
         let (width, height) = self.configured.context("layer configure missing")?;
         ensure!(
@@ -351,6 +369,62 @@ impl State {
         self.request_frame_feedback(qh, 0)
     }
 
+    #[allow(dead_code)] // The replacement proof keeps a previous root image mapped.
+    pub fn enable_nested_staging(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        previous: [u8; 3],
+        intercept: bool,
+    ) -> Result<()> {
+        ensure!(
+            self.child.is_none() && self.nested.is_none(),
+            "staging already initialized"
+        );
+        let size = self.configured.context("layer configure missing")?;
+        let tree = nested::Tree::new(self, qh, previous, intercept)?;
+        self.request_root_feedback(qh, 0)?;
+        tree.show_previous(size)?;
+        self.nested = Some(tree);
+        Ok(())
+    }
+
+    fn request_root_feedback(&mut self, qh: &QueueHandle<Self>, id: u64) -> Result<()> {
+        self.presentation
+            .as_ref()
+            .context("presentation feedback missing")?
+            .feedback(self.surface.as_ref().context("root missing")?, qh, id);
+        self.pending_feedback = true;
+        Ok(())
+    }
+
+    #[allow(dead_code)] // Caller waits for candidate presentation before rollback.
+    pub fn rollback_nested(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
+        ensure!(
+            self.staging_published && !self.pending_feedback,
+            "rollback requires confirmed publication"
+        );
+        self.request_root_feedback(qh, 2)?;
+        self.nested
+            .as_ref()
+            .context("nested tree missing")?
+            .rollback(self.configured.context("layer configure missing")?)?;
+        self.staging_published = false;
+        self.injected = false;
+        self.dirty = false;
+        Ok(())
+    }
+
+    #[allow(dead_code)] // Caller first drops the candidate's native EGL window.
+    pub fn abort_nested(&mut self) -> Result<()> {
+        ensure!(
+            !self.staging_published,
+            "cannot abort a published candidate"
+        );
+        self.nested.as_mut().context("nested tree missing")?.abort();
+        self.dirty = false;
+        Ok(())
+    }
+
     pub fn request_frame_feedback(&mut self, qh: &QueueHandle<Self>, frame_id: u64) -> Result<()> {
         self.presentation
             .as_ref()
@@ -388,6 +462,7 @@ impl Drop for State {
     fn drop(&mut self) {
         // Caller drops EGLSurface and wl_egl_window before destroying these roots.
         self.secondary.take();
+        self.nested.take();
         if let Some(role) = self.child_role.take() {
             role.destroy();
         }
@@ -681,7 +756,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                     state.witness_buttons += 1;
                 }
                 if state.pointer_focus == state.surface
-                    || state.child.is_some() && state.pointer_focus == state.child
+                    || state
+                        .render_surface()
+                        .ok()
+                        .is_some_and(|surface| Some(surface) == state.pointer_focus.as_ref())
                 {
                     state.intercepted = true;
                 }

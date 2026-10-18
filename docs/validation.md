@@ -201,6 +201,14 @@ requires moving video and a new playback loop on the survivor after the first na
 surface is destroyed, while the shared display/context remain alive. This does not yet
 replace production's per-output decoders or qualify general display management.
 
+The [nested publication diagnostic](nested-egl-publication-probe.md) keeps a previous
+image visible under one persistent desktop root while a native candidate is prepared,
+resized, published and rolled back. A separate unmapped intermediate container hides
+the candidate independently of previous-image opacity and same-layer surface ordering.
+Private Mesa/NVIDIA tests require actual old/candidate/restored presentation, sampled
+transition pixels, click-through and abort retaining the previous image. Replacement
+between real media pipelines and transactional worker apply remain open.
+
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,
   Finder icons, fullscreen behavior and native app activation.
 - Multiple monitors, fractional/mixed scaling, output rotations, mixed refresh,
