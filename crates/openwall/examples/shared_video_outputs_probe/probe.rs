@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #[path = "../probe_support/decoder_trace.rs"]
 mod decoder_trace;
-#[path = "../owned_egl_wayland_probe/egl_window.rs"]
-#[allow(dead_code)] // Static probes also paint quadrants with this native owner.
-mod egl_window;
-#[path = "../probe_support/gl_api.rs"]
-mod gl_api;
+use openwall::native_egl::gl_api;
+use openwall::native_egl::window as egl_window;
 #[path = "../probe_support/gl_painter.rs"]
 mod gl_painter;
 #[path = "../native_gl_video_probe/media.rs"]
@@ -108,12 +105,16 @@ pub fn run() -> Result<()> {
     let session = egl_window::Session::new(&connection, args.gl_api)?;
     let counts = session.counts();
     let (width, height) = state.configured.context("first configure missing")?;
-    let first =
-        egl_window::Window::on_session(session.clone(), state.render_surface()?, width, height)?;
+    let first = unsafe {
+        // SAFETY: The private State/tree retains this exclusive protocol surface and role until after its native window is dropped.
+        egl_window::Window::on_session(session.clone(), state.render_surface()?, width, height)
+    }?;
     let secondary = state.secondary.as_ref().context("second surface missing")?;
     let (width, height) = secondary.configured.context("second configure missing")?;
-    let second =
-        egl_window::Window::on_session(session.clone(), &secondary.surface, width, height)?;
+    let second = unsafe {
+        // SAFETY: The private State/tree retains this exclusive protocol surface and role until after its native window is dropped.
+        egl_window::Window::on_session(session.clone(), &secondary.surface, width, height)
+    }?;
     ensure!(
         first.handles()? == second.handles()?,
         "outputs do not share one native EGL display/context"
