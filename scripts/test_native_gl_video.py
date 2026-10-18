@@ -89,11 +89,13 @@ def main():
                     max(abs(a - b) for a, b in zip(image.getpixel((int(image.width * x), int(image.height * y))), baseline)) <= 2
                     for x, y in [(.1, .25), (.7, .25), (.3, .75), (.9, .75)])
 
-            def identify_frame(child):
+            def identify_frame(child, log):
                 if child.poll() is not None:
                     return None
                 image = session.capture(first)
-                if child.poll() is not None:
+                # EGL/driver teardown can outlive surface removal. A screenshot
+                # racing intentional cleanup must not be judged as a video frame.
+                if child.poll() is not None or "Native GL video removing private surfaces" in session.text(log):
                     return None
                 assert image is not None
                 errors = []
@@ -117,7 +119,7 @@ def main():
             clicks = 2
             for command in [f"output {first} mode 800x500", f"output {first} scale 1.25",
                             f"output {first} scale 2", f"output {first} transform 90"]:
-                result = identify_frame(child)
+                result = identify_frame(child, log)
                 assert result is not None, session.diagnostics()
                 identity, error = result
                 seen.add(identity)
@@ -129,7 +131,7 @@ def main():
             until = time.monotonic() + 25
             while child.poll() is None:
                 assert time.monotonic() < until, ("bounded playback did not finish", session.diagnostics())
-                result = identify_frame(child)
+                result = identify_frame(child, log)
                 if result is None:
                     break
                 identity, error = result

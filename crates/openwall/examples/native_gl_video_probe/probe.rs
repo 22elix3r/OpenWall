@@ -321,6 +321,7 @@ pub fn run() -> Result<()> {
         "decoders":media.decoders()?,
         "delivery":{"received":received,"replaced":replaced,"latest_slot_limit":1},
         "consumer_fences":{"submitted":records.len(),"retired":retired,"peak_in_flight":peak,"limit":3,"cleanup_finish_calls":finishes.get()}});
+    eprintln!("Native GL video removing private surfaces");
     drop(leases);
     drop(media);
     drop(painter);
