@@ -50,8 +50,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/examples/video_transfer_probe")
     parser.add_argument("--software-gl", action="store_true")
+    parser.add_argument("--owned-gl-binary", type=Path,
+                        help="also check the experimental single-frame shared-texture consumer")
     args = parser.parse_args()
+    if args.owned_gl_binary and not args.software_gl:
+        parser.error("--owned-gl-binary requires --software-gl for isolated Mesa checks")
     binary = args.binary.resolve(strict=True)
+    owned_gl = args.owned_gl_binary.resolve(strict=True) if args.owned_gl_binary else None
     results = []
     with tempfile.TemporaryDirectory(prefix="openwall-color-test-") as temporary:
         directory = Path(temporary)
@@ -67,6 +72,8 @@ def main():
             modes.append(("gl-download", {"GST_GL_WINDOW": "surfaceless", "GST_GL_PLATFORM": "egl",
                           "GST_GL_API": "gles2", "EGL_PLATFORM": "surfaceless",
                           "LIBGL_ALWAYS_SOFTWARE": "1", "__EGL_VENDOR_LIBRARY_FILENAMES": str(mesa)}))
+            if owned_gl:
+                modes.append(("owned-gl", modes[-1][1]))
         for matrix in ["bt709", "smpte170m"]:
             for full_range in [False, True]:
                 label = f"{matrix}-{'full' if full_range else 'limited'}"
@@ -74,7 +81,7 @@ def main():
                 raw = directory / f"{label}.yuv"
                 # A distinct second frame makes accidental last-frame capture fail.
                 raw.write_bytes(original_yuv(colors) + original_yuv([(128, 128, 128)] * 10))
-                video = directory / f"{label}.webm"
+                video = directory / f"{label} ! name='quoted'.webm"
                 tags = ["-colorspace", matrix, "-color_primaries", matrix,
                         "-color_trc", matrix, "-color_range", "pc" if full_range else "tv"]
                 subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "rawvideo",
@@ -90,14 +97,21 @@ def main():
                 assert decoded == original_yuv(colors), label
                 for mode, extra in modes:
                     capture = directory / f"{label}-{mode}.png"
-                    run = subprocess.run([str(binary), str(video), "--mode", mode,
-                                          "--seconds", "1", "--warmup", "0", "--first-frame", str(capture)],
+                    command = ([str(owned_gl), str(video)] if mode == "owned-gl" else
+                               [str(binary), str(video), "--mode", mode, "--seconds", "1", "--warmup", "0"])
+                    run = subprocess.run([*command, "--first-frame", str(capture)],
                                          env=dict(env, **extra), capture_output=True, text=True, timeout=25)
                     assert run.returncode == 0, (label, mode, run.stderr[-16_384:])
                     report = json.loads(run.stdout)
                     assert report["first_frame_capture"]["pts_ns"] == 0, report
                     assert report["first_frame_capture"]["bytes"] == WIDTH * HEIGHT * 4, report
                     assert any(item["factory"] == "vp9dec" for item in report["decoders"]), report
+                    if mode == "owned-gl":
+                        assert report["scope"] == "single_shared_texture_draw_into_owned_fbo", report
+                        assert report["consumer_cpu_buffer_maps"] == 0 and report["snapshot_readbacks"] == 1, report
+                        assert report["input_memory"]["shared_context"] and report["input_memory"]["producer_sync_meta"], report
+                        assert report["input_memory"]["allocator_type"].startswith("GstGLMemory"), report
+                        assert "llvmpipe" in report["gl"]["renderer"].lower(), report
                     # This exact CI runtime selects its limited BT.601 coefficients
                     # for full-range input. Check that known behavior independently;
                     # never count it as color conformance or relax the reference limit.
@@ -134,6 +148,28 @@ def main():
         assert incompatible.returncode != 0 and "cannot map" in incompatible.stderr, incompatible
         assert not incompatible.stdout.strip(), incompatible.stdout
         assert not (directory / "forbidden.png").exists()
+        if owned_gl:
+            extra = modes[-1][1]
+
+            def reject(path, output, environment):
+                failed = subprocess.run([str(owned_gl), str(path), "--first-frame", str(output)],
+                                        env=environment, capture_output=True, text=True, timeout=25)
+                assert failed.returncode != 0 and not failed.stdout.strip(), failed
+                return failed
+
+            guard = reject(video, directory / "no-window.png", env)
+            assert "GST_GL_WINDOW=surfaceless" in guard.stderr and not (directory / "no-window.png").exists(), guard
+            invalid = directory / "invalid.webm"
+            invalid.write_bytes(b"OpenWall original invalid-media test\n")
+            reject(invalid, directory / "invalid.png", dict(env, **extra))
+            assert not (directory / "invalid.png").exists()
+            existing = directory / "existing.png"
+            existing.write_bytes(b"preserve this existing file")
+            reject(video, existing, dict(env, **extra))
+            link = directory / "existing-link.png"
+            link.symlink_to(existing)
+            reject(video, link, dict(env, **extra))
+            assert existing.read_bytes() == b"preserve this existing file" and link.is_symlink()
     print(json.dumps({"video_color_regressions": "passed",
                       "all_within_one_level_of_reference": all(
                           result["within_one_level_of_reference"] for result in results),
