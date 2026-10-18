@@ -130,11 +130,8 @@ def exercise(session, args, env, host, desktop_check=None):
     session.stop_worker(worker)
 
     if args.video_fixture:
-        # Force a native Wayland sink; autovideosink's driver-specific preference
-        # order is not part of the presentation bridge's contract.
-        video_env = dict(worker_env, GST_PLUGIN_FEATURE_RANK="waylandsink:MAX")
         video, log = spawn(session, [str(args.binary), "preview", str(args.video_fixture)],
-                           video_env, "video")
+                           worker_env, "video")
 
         def video_frame():
             assert_alive(session, host, video)
@@ -144,9 +141,15 @@ def exercise(session, args, env, host, desktop_check=None):
                 for x, y in [(.25, .25), (.75, .25), (.25, .75), (.75, .75)])
 
         wait_for(video_frame, "native video pixels inside presentation host")
+        session.expect_log(video, log, "First video buffer:")
+        session.expect_log(video, log, "Native video window configured")
         session.expect_log(video, log, "Video loop restarted")
+        if desktop_check:
+            desktop_check()
         decoders = session.text(log).count("GStreamer decoder:")
+        offset = len(session.text(log))
         session.ipc("output HEADLESS-1 mode 800x450 scale 1")
+        session.expect_log(video, log, "logical 800×450", offset)
         wait_for(video_frame, "native video after host resize")
         offset = len(session.text(log))
         session.expect_log(video, log, "Video loop restarted", offset)
@@ -155,6 +158,12 @@ def exercise(session, args, env, host, desktop_check=None):
         session.stop_worker(video)
         session.ipc("output HEADLESS-1 mode 640x360 scale 1")
         wait_for(fallback, "fallback after video exit")
+        video, _ = spawn(session, [str(args.binary), "preview", str(args.video_fixture)],
+                         worker_env, "video-crash")
+        wait_for(video_frame, "video before SIGKILL")
+        video.kill()
+        video.wait(timeout=10)
+        wait_for(fallback, "fallback after video SIGKILL")
 
     print(json.dumps({"bridge": "Plasma desktop" if args.plasma else "Qt host",
                       "checks": ["scene pixels", "duplicate client rejection", "resize", "graceful exit",

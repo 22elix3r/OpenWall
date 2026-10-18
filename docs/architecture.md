@@ -20,11 +20,24 @@ PNG/JPEG/WebP and static raw TEX decoding is bounded; embedded-media TEX is reje
 
 `openwall` is the actual GPU/media worker and diagnostic CLI. A scene's textures are
 uploaded to the GPU and rendered only on presentation/configuration changes. Linux
-Wayland surfaces are background-layer, non-focusable and click-through. Hot-plug removes
-GPU presentation before native surfaces. The C pointer boundary documents connection and
+Wayland desktop surfaces are background-layer, non-focusable and click-through. Hot-plug
+removes GPU presentation before native surfaces. The C pointer boundary documents connection and
 surface lifetime requirements. Linux video uses GStreamer-owned Wayland subsurfaces;
-the parent surface has a static shared-memory black buffer, so video workers never
-initialize a second scene GPU/device. macOS uses AppKit and AVFoundation.
+the parent surface has a static shared-memory black buffer backed by an anonymous memfd,
+so video workers never initialize a second scene GPU/device or require a writable temporary
+filesystem. macOS uses AppKit and AVFoundation.
+
+Wayland video previews and experimental shell-hosted workers use an OpenWall-owned XDG
+toplevel. GStreamer receives a separate container subsurface, preserving OpenWall's
+exclusive ownership of root commits and XDG configure acknowledgments. This matters
+because GStreamer's embedding constructor commits the parent it receives. The XDG root
+stays unmapped until decoded video reaches the sink. A sink-buffer arrival is data
+readiness, not proof of compositor presentation; M1 still needs transactional first-frame
+acknowledgments. A startup deadline covers missing configure/data events; the launcher
+must also bound blocked native-library calls. Playback waits on Wayland and media events
+rather than periodic polling. Resize briefly synchronizes the container with its parent commit,
+then resumes independently paced playback without restarting the decoder. Preview on X11
+still uses GStreamer's automatic window; this does not provide X11 desktop integration.
 
 Wayland surface-local dimensions and physical buffer dimensions are separate. The
 `wp_fractional_scale_v1` preference uses units of 1/120; buffers round to physical
@@ -85,9 +98,11 @@ The [GNOME presentation probe](../integrations/gnome/README.md) uses a dedicated
 background actor. Ownership is determined by the connection; unrelated windows with
 matching titles are preserved. Worker logs, startup and stop waits are bounded, and
 source/clone teardown is tied to the specific worker instance. It does not install
-shell-method overrides or provide finished app-list/workspace roles. The probe exposes
-the remaining need for OpenWall-owned XDG video parents instead of the automatic
-GStreamer toplevel path. Normal GNOME Apply remains guarded.
+shell-method overrides or provide finished app-list/workspace roles. Its native XDG video
+path uses the same isolated container boundary as other Wayland previews. A minimized
+source window can still feed a visible background clone, so future visibility policy must
+use the adapter's actual background state rather than the source window's minimized state.
+Normal GNOME Apply remains guarded.
 
 ## Compatibility boundaries
 

@@ -94,8 +94,7 @@ def software_plugins(directory, plugin_dir):
         source = plugin_dir / f"libgst{name}.so"
         assert source.is_file(), f"Missing software test plugin: {source}"
         (destination / source.name).symlink_to(source.resolve())
-    return {"GST_PLUGIN_SYSTEM_PATH_1_0": str(destination), "GST_PLUGIN_PATH_1_0": "",
-            "GST_PLUGIN_FEATURE_RANK": "waylandsink:MAX"}
+    return {"GST_PLUGIN_SYSTEM_PATH_1_0": str(destination), "GST_PLUGIN_PATH_1_0": ""}
 
 
 def private_test(directory):
@@ -189,7 +188,23 @@ def private_test(directory):
                 time.sleep(.3)
             assert frames[0] != frames[1], "background video is frozen"
             assert "OpenWall GPU:" not in probe.status()["diagnostics"]
+            assert "First video buffer:" in probe.status()["diagnostics"]
+            assert "Native video window configured" in probe.status()["diagnostics"]
+            assert "parent 1×1" in probe.status()["diagnostics"]
             probe.stop()
+
+            invalid = directory / "invalid.webm"
+            invalid.write_bytes(b"OpenWall invalid video fixture\n")
+            evaluate(bus, "global._invalidVideoMaps = 0; global._invalidVideoSignal = "
+                     "global.window_manager.connect_after('map', (_wm, actor) => { "
+                     "const run = global._openwallProbe._run; "
+                     "if (run?.client.owns_window(actor.meta_window)) global._invalidVideoMaps++; });")
+            evaluate(bus, "global._openwallProbe.start(" + ",".join(json.dumps(arg) for arg in
+                     [options["binary"], str(invalid), video_env]) + ")")
+            wait_for(lambda: probe.status()["pid"] is None, "invalid video fails before mapping")
+            assert evaluate(bus, "global._invalidVideoMaps") == 0, "failed video mapped a black window"
+            assert "video playback failed" in probe.status()["diagnostics"], probe.status()
+            evaluate(bus, "global.window_manager.disconnect(global._invalidVideoSignal)")
 
         # A rejected worker exits without leaving presentation objects behind.
         sleeper = shutil.which("sleep")
@@ -223,6 +238,8 @@ def private_test(directory):
         shell.terminate()
         shell.wait(timeout=5)
         assert outsider.wait(timeout=10) != 0, "compositor loss reported success"
+        assert "committed initial non-empty content without acknowledging configuration" not in (directory / "shell.log").read_text(), "video violated the initial XDG configure handshake"
+        assert "Client provided invalid window geometry" not in (directory / "shell.log").read_text(), "video committed invalid XDG geometry"
         print(json.dumps({"gnome_background_probe": "passed", "video": bool(options["video"]),
                           "checks": ["scene pixels", "connection ownership", "ordinary client preserved",
                                      "fallback", "startup cancellation", "worker cleanup",

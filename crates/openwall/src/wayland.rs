@@ -2,6 +2,8 @@
 //! Native layer-shell presentation. No XWayland window placement workaround.
 mod layout;
 mod recovery;
+#[cfg(feature = "video")]
+pub mod video_window;
 
 use layout::Layout;
 use recovery::Recovery;
@@ -709,19 +711,25 @@ delegate_noop!(State: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(State: ignore wl_buffer::WlBuffer);
 
 #[cfg(feature = "video")]
-fn black_buffer(
+fn black_buffer<D>(
     shm: &wl_shm::WlShm,
-    qh: &QueueHandle<State>,
+    qh: &QueueHandle<D>,
     width: u32,
     height: u32,
-) -> Result<wl_buffer::WlBuffer> {
+) -> Result<wl_buffer::WlBuffer>
+where
+    D: Dispatch<wl_shm_pool::WlShmPool, ()> + Dispatch<wl_buffer::WlBuffer, ()> + 'static,
+{
     use std::os::fd::AsFd;
     let bytes = u64::from(width) * u64::from(height) * 4;
     anyhow::ensure!(
-        width <= 16384 && height <= 16384 && bytes <= 256 * 1024 * 1024,
+        width > 0 && height > 0 && width <= 16384 && height <= 16384 && bytes <= 256 * 1024 * 1024,
         "output exceeds presentation buffer limits"
     );
-    let mut file = tempfile::tempfile()?;
+    // Anonymous memory backing works in read-only namespaces and does not depend
+    // on the host's temporary filesystem. The compositor receives its own FD.
+    let fd = rustix::fs::memfd_create(c"openwall-black", rustix::fs::MemfdFlags::CLOEXEC)?;
+    let mut file = std::fs::File::from(fd);
     file.write_all(&0xff000000u32.to_ne_bytes().repeat((bytes / 4) as usize))?;
     let pool = shm.create_pool(file.as_fd(), bytes as i32, qh, ());
     let buffer = pool.create_buffer(
