@@ -1,0 +1,12 @@
+{
+  "KPackageStructure": "Plasma/Wallpaper",
+  "KPlugin": {
+    "Id": "org.openwall.wallpaper",
+    "Name": "OpenWall",
+    "Description": "External OpenWall wallpaper presentation (experimental)",
+    "Icon": "preferences-desktop-wallpaper",
+    "License": "AGPL-3.0-or-later",
+    "Authors": [{ "Name": "OpenWall contributors" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

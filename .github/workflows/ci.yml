@@ -22,7 +22,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld pkg-config libwayland-dev libxkbcommon-dev libvulkan1 mesa-vulkan-drivers libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad sway grim ffmpeg python3-pil qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-wayland qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-templates qml6-module-qtqml-workerscript
+          sudo apt-get install -y clang lld pkg-config libwayland-dev libxkbcommon-dev libvulkan1 mesa-vulkan-drivers libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad sway grim ffmpeg python3-pil qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-wayland qml-qt6 qml6-module-qtwayland-compositor qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-templates qml6-module-qtqml-workerscript
       - name: macOS desktop dependencies
         if: runner.os == 'macOS'
         run: |
@@ -53,6 +53,9 @@ jobs:
         run: |
           ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=30 -t 2 -an -c:v libvpx-vp9 -b:v 400k /tmp/openwall-loop.webm
           /usr/bin/python3 scripts/test_wayland_headless.py --software-vulkan --video-fixture /tmp/openwall-loop.webm
+      - name: External-process Plasma presentation bridge
+        if: runner.os == 'Linux'
+        run: /usr/bin/python3 scripts/test_plasma_bridge.py --video-fixture /tmp/openwall-loop.webm
       - name: GUI startup
         env:
           QT_QPA_PLATFORM: offscreen

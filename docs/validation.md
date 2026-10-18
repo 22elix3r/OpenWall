@@ -100,13 +100,39 @@ before the sink is parented into playbin. The complete suite passes with the old
 and checks that desktop video never opens a separate application window. The one-pixel
 parent optimization remains enabled.
 
+## Experimental Plasma bridge: 2026-10-18
+
+Fedora 43, Plasma/KWin 6.6.4 and Qt 6.10.3 passed an isolated nested-desktop test using
+Mesa software Vulkan/OpenGL and shared-memory client buffers. The actual wallpaper
+package was copied into temporary XDG data; a private D-Bus session activated only
+ActivityManager. Neither the running Hyprland session nor its configuration was used.
+
+- Original quadrant pixels from a Rust worker appeared inside the Plasma wallpaper.
+- A repository-owned desktop widget appeared above it and received a virtual pointer
+  click through both nested desktops; its visible state changed after the click.
+- Duplicate toplevel rejection preserved the original wallpaper and host process.
+- Graceful worker exit, SIGKILL, reconnection and dark fallback passed.
+- Fractional output changes and logical host resizing preserved visible scene pixels.
+- Native GStreamer Wayland video appeared and looped, including after host resizing,
+  without replacing the decoder or initializing a separate scene GPU.
+- A wallpaper loaded in a plain preview window did not create a compositor socket.
+
+Run the generic Qt host test with `python3 scripts/test_plasma_bridge.py`; it exercises
+the actual presentation QML without requiring Plasma and is included in Linux CI.
+The full desktop test is opt-in with `--plasma`; see the adapter's
+[test instructions and remaining gates](../integrations/plasma/README.md).
+No hardware DMA-BUF import, sustained performance, general Plasma-version compatibility,
+real configuration-dialog lifecycle, screen lock or activity switching is qualified.
+Normal GUI/CLI Apply on Plasma remains unavailable until its connection/lifecycle
+contract is implemented and validated.
+
 ## Required before support claims
 
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,
   Finder icons, fullscreen behavior and native app activation.
 - Multiple monitors, fractional/mixed scaling, output rotations, mixed refresh,
   hot-plug and display sleep/wake.
-- GNOME and Plasma integration proofs and version-specific lifecycle testing.
+- GNOME integration proof and GNOME/Plasma version-specific lifecycle testing.
 - Driver/device combinations, external-memory synchronization and failure recovery.
 - Playback power/visibility policy, GPU device loss and bounded worker restarts.
 - Screen readers, keyboard navigation and reduced motion.

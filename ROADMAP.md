@@ -21,5 +21,8 @@ M0 progress (2026-10-18): per-surface fractional-scale/viewporter presentation, 
 physical buffer sizing, video resize without decoder replacement, and a private headless
 Sway regression suite now cover mixed scales, rotation, newly connected outputs, complete
 output disable/enable, selected-output placement, static idle behavior, worker crashes,
-and compositor loss. These are automated protocol/pixel checks, not qualification of
-physical monitor hot-plug, suspend/resume, energy use, macOS, GNOME or Plasma.
+and compositor loss. An experimental Plasma wallpaper item can present an external
+Rust/GStreamer worker in a private nested Plasma 6 session. Connection discovery,
+GPU-resident buffer sharing and real desktop lifecycle qualification remain open.
+These automated protocol/pixel checks do not qualify physical monitor hot-plug,
+suspend/resume, energy use, macOS, GNOME or general Plasma support.

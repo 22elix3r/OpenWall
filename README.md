@@ -32,7 +32,9 @@ CI builds macOS, but cannot certify real desktop behavior. An isolated headless 
 suite verifies mixed scaling, rotation, output removal/reconnection, video resizing,
 and worker/compositor crash cleanup using actual displayed pixels.
 
-GNOME and Plasma require dedicated integrations; these are not implemented yet.
+An [experimental Plasma 6 presentation shim](integrations/plasma/README.md) hosts external
+workers under desktop widgets; its private-session tests do not yet qualify normal
+GUI/CLI application on Plasma. GNOME still requires its own integration.
 There is no X11 desktop backend yet. macOS currently applies to one selected/default
 monitor. Linux video currently creates a decoder for each output. SceneScript, custom
 effects, particles, web wallpapers, persistent libraries, discovery, and power rules

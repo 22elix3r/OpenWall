@@ -1,0 +1,9 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.openwall.test-widget",
+    "Name": "OpenWall integration test",
+    "License": "AGPL-3.0-or-later"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

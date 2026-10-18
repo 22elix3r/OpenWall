@@ -70,6 +70,16 @@ The current launcher does not implement that transaction or a restart policy. Th
 no stable external plugin ABI. GNOME/Plasma adapters must remain minimal trusted
 presentation shims; media decoding, scripts and shader compilation stay out of the shell.
 
+The [experimental Plasma shim](../integrations/plasma/README.md) implements that
+presentation boundary using a Qt Wayland compositor inside a `WallpaperItem`. An
+external Rust/GStreamer worker connects to a per-instance socket and supplies one XDG
+toplevel; the shell displays its buffers below desktop widgets and forwards no input.
+Disconnecting a duplicate client is deferred until Qt's creation callback has returned,
+avoiding use-after-free in Qt's remaining role initialization. Worker exit/crash reveals
+a static fallback and permits reconnection. This prototype uses test-only discovery and
+is not connected to Apply. Shared-memory correctness has been tested; efficient hardware
+buffer import and a versioned/authorized connection handshake remain open.
+
 ## Compatibility boundaries
 
 The parser dependency is pinned in Cargo.toml/Cargo.lock. OpenWall currently maps only

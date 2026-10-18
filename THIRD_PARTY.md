@@ -9,6 +9,7 @@ Third-party copyrights and licenses remain with their respective authors.
 | wgpu / Naga | [gfx-rs/wgpu](https://github.com/gfx-rs/wgpu), versions in Cargo.lock | MIT OR Apache-2.0; GPU abstraction/shader validation. |
 | CXX-Qt | [KDAB/cxx-qt](https://github.com/KDAB/cxx-qt), versions in Cargo.lock | MIT OR Apache-2.0; Rust/Qt bridge. Build/bridge patterns follow its published examples. |
 | Qt 6 | [Qt licensing](https://doc.qt.io/qt-6/licensing.html) | Qt module/third-party licenses apply, including LGPLv3/GPL options. Dynamically linked platform installation in this source-build snapshot. |
+| Qt Wayland Compositor | [Module licensing](https://doc.qt.io/qt-6.10/qtwaylandcompositor-index.html#licenses-and-attributions) | GPLv3 open-source option; used by the experimental Plasma presentation shim. This module is not LGPL. Host distribution supplies its runtime and source. |
 | GStreamer / Rust bindings | [GStreamer](https://gstreamer.freedesktop.org/), versions in Cargo.lock / host packages | LGPL family and compatible component licenses; host codec plugins are separately installed. |
 | winit / Wayland Rust crates | Sources and exact versions in Cargo.lock | MIT / Apache-2.0 / compatible licenses as declared by each crate. |
 | AVFoundation, AppKit, CoreGraphics, CoreAnimation | System frameworks on macOS | Platform APIs supplied by the operating system, not redistributed by OpenWall. |
