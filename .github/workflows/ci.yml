@@ -43,14 +43,14 @@ jobs:
       - run: cargo fmt --all --check
       - name: Integration probe syntax
         run: |
-          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/test_video_transfer_probe.py scripts/test_video_color.py scripts/test_owned_gl_sequence.py scripts/build_wayland_runtime.py scripts/test_wayland_runtime.py
+          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/test_video_transfer_probe.py scripts/test_video_color.py scripts/test_owned_gl_sequence.py scripts/test_owned_egl_wayland.py scripts/build_wayland_runtime.py scripts/test_wayland_runtime.py
           node --input-type=module --check < integrations/gnome/presentation.js
       - name: Measurement harness process tests
         run: python3 -m unittest discover -s scripts/tests -v
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Optional shared-GL probe compile checks
         if: runner.os == 'Linux'
-        run: cargo clippy -p openwall --example owned_gl_video_probe --features video-gl-probe --locked -- -D warnings
+        run: cargo clippy -p openwall --examples --features video-gl-probe --locked -- -D warnings
       - run: cargo build --workspace --locked
       - name: Save compiled dependencies before native integration tests
         if: steps.rust-cache.outputs.cache-hit != 'true'
@@ -112,6 +112,11 @@ jobs:
           assert result.returncode != 0 and "requires GStreamer 1.26 or newer" in result.stderr, result
           assert not result.stdout.strip() and not os.path.exists("/tmp/openwall-old-gl.png"), result
           PY
+      - name: Owned EGL Wayland surface and click-through
+        if: runner.os == 'Linux'
+        run: |
+          cargo build -p openwall --example owned_egl_wayland_probe --features video-gl-probe --locked
+          /usr/bin/python3 scripts/test_owned_egl_wayland.py
       - name: GUI startup
         env:
           QT_QPA_PLATFORM: offscreen

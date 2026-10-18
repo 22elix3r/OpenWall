@@ -9,7 +9,7 @@ description = "Open-source desktop wallpapers and Wallpaper Engine compatibility
 [features]
 default = ["video"]
 video = ["dep:gstreamer", "dep:gstreamer-video", "dep:libloading"]
-video-gl-probe = ["video", "dep:gstreamer-app", "dep:gstreamer-gl", "dep:gstreamer-gl-egl", "dep:khronos-egl", "dep:glow"]
+video-gl-probe = ["video", "dep:gstreamer-app", "dep:gstreamer-gl", "dep:gstreamer-gl-egl", "dep:khronos-egl", "dep:glow", "dep:wayland-egl"]
 
 [dependencies]
 openwall-core.workspace = true
@@ -38,6 +38,7 @@ gstreamer-gl = { version = "0.24", optional = true }
 gstreamer-gl-egl = { version = "0.24", optional = true, features = ["v1_24"] }
 khronos-egl = { version = "6", optional = true, features = ["dynamic"] }
 glow = { version = "0.18", optional = true }
+wayland-egl = { version = "0.32.11", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
