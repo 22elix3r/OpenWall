@@ -121,7 +121,8 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software target/debug/openwall-ui --c
 
 The GPU test compares packed-scene output with the original sample art. It is skipped
 unless explicitly enabled. Hosted software-GPU CI checks correctness, not efficiency.
-See [validation](docs/validation.md), [architecture](docs/architecture.md),
+See [validation](docs/validation.md), [video measurement](docs/video-performance.md),
+[architecture](docs/architecture.md),
 [contributing](CONTRIBUTING.md), and [security](SECURITY.md).
 
 ## License and compatibility research
