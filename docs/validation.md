@@ -189,6 +189,12 @@ pixels before publication, cancellation/crash cleanup and bounded control messag
 GL APIs are exercised on Mesa and explicitly selected NVIDIA hardware. This does not yet
 provide transactional video or worker apply; physical scanout remains unqualified.
 
+The combined [video diagnostic](native-gl-video-probe.md#optional-paused-video-publication)
+can now preroll in PAUSED, retain PTS zero through hidden resizing, publish the corrected
+buffer and start the same pipeline. Private Mesa/NVIDIA tests verify animated pixels,
+presentation, GPU lease retirement and paused cancellation; general worker apply and
+resizing published content still require qualification.
+
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,
   Finder icons, fullscreen behavior and native app activation.
 - Multiple monitors, fractional/mixed scaling, output rotations, mixed refresh,

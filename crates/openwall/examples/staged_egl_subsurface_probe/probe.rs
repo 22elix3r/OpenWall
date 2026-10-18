@@ -3,6 +3,8 @@
 mod egl_window;
 #[path = "../probe_support/gl_api.rs"]
 mod gl_api;
+#[path = "../probe_support/publish_control.rs"]
+mod publish_control;
 #[path = "../owned_egl_wayland_probe/wayland.rs"]
 mod wayland;
 #[path = "../probe_support/wayland_poll.rs"]
@@ -11,11 +13,8 @@ mod wayland_poll;
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use std::{
-    io::{ErrorKind, Read, Write},
-    os::{
-        fd::AsFd,
-        unix::net::{UnixDatagram, UnixStream},
-    },
+    io::{Read, Write},
+    os::{fd::AsFd, unix::net::UnixStream},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -47,10 +46,7 @@ pub fn run() -> Result<()> {
         std::env::var("OPENWALL_PRIVATE_COMPOSITOR").as_deref() == Ok("1"),
         "staged EGL probe requires OPENWALL_PRIVATE_COMPOSITOR=1 from its private harness"
     );
-    // Diagnostic-only control channel: no deletion or replacement of existing paths.
-    // The harness owns and removes the enclosing 0700 temporary directory.
-    let control = UnixDatagram::bind(&args.control_socket)?;
-    control.set_nonblocking(true)?;
+    let mut control = publish_control::Control::bind(&args.control_socket)?;
     let (mut wake_read, wake_write) = UnixStream::pair()?;
     wake_read.set_nonblocking(true)?;
     wake_write.set_nonblocking(true)?;
@@ -71,7 +67,6 @@ pub fn run() -> Result<()> {
     let mut geometry_refreshes = 0;
     let mut published = false;
     let mut published_size = None;
-    let mut requested = false;
     let mut ready = false;
     let deadline = Instant::now() + Duration::from_secs(args.seconds);
     let mut feedback_deadline = None;
@@ -79,20 +74,7 @@ pub fn run() -> Result<()> {
         queue.dispatch_pending(&mut state)?;
         let mut bytes = [0; 64];
         while wake_read.read(&mut bytes).is_ok_and(|count| count > 0) {}
-        let mut message = [0; 32];
-        loop {
-            match control.recv(&mut message) {
-                Ok(count) => {
-                    ensure!(
-                        !requested && &message[..count] == b"publish\n",
-                        "invalid or duplicate staged publish command"
-                    );
-                    requested = true;
-                }
-                Err(error) if error.kind() == ErrorKind::WouldBlock => break,
-                Err(error) => return Err(error.into()),
-            }
-        }
+        let requested = control.poll()?;
         ensure!(!state.closed, "selected private output or witness closed");
         ensure!(
             !state.intercepted,

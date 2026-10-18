@@ -9,6 +9,8 @@ mod gl_api;
 #[path = "../probe_support/gl_painter.rs"]
 mod gl_painter;
 mod media;
+#[path = "../probe_support/publish_control.rs"]
+mod publish_control;
 #[path = "../probe_support/shared_gl.rs"]
 mod shared_gl;
 #[path = "../owned_egl_wayland_probe/wayland.rs"]
@@ -25,7 +27,7 @@ use std::{
     cell::Cell,
     collections::VecDeque,
     io::Read,
-    os::unix::net::UnixStream,
+    os::{fd::AsFd, unix::net::UnixStream},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -51,6 +53,9 @@ struct Args {
     gl_api: gl_api::Api,
     #[arg(long)]
     intercept_input: bool,
+    /// Private harness gate: preroll paused, then publish on one exact command.
+    #[arg(long)]
+    staged_control: Option<PathBuf>,
 }
 
 struct Wrapped(gst_gl::GLContext);
@@ -71,6 +76,12 @@ pub fn run() -> Result<()> {
         gst::version().0 == 1 && gst::version().1 >= 26,
         "native GL video probe requires GStreamer 1.26 or newer"
     );
+    let staging = args.staged_control.is_some();
+    let mut control = args
+        .staged_control
+        .as_deref()
+        .map(publish_control::Control::bind)
+        .transpose()?;
     let (mut reader, writer) = UnixStream::pair()?;
     reader.set_nonblocking(true)?;
     writer.set_nonblocking(true)?;
@@ -82,7 +93,11 @@ pub fn run() -> Result<()> {
         signal.store(true, Ordering::Relaxed);
         media::wake(&signal_writer);
     })?;
-    let (connection, mut queue, mut state) = wayland::connect(&args.output, args.intercept_input)?;
+    let (connection, mut queue, mut state) =
+        wayland::connect(&args.output, !staging && args.intercept_input)?;
+    if staging {
+        state.enable_staging(&queue.handle(), args.intercept_input)?;
+    }
     let startup = Instant::now() + Duration::from_secs(10);
     while state.configured.is_none() {
         queue.dispatch_pending(&mut state)?;
@@ -100,13 +115,16 @@ pub fn run() -> Result<()> {
     let native_session = egl_window::Session::new(&connection, args.gl_api)?;
     let window = egl_window::Window::on_session(
         native_session.clone(),
-        state.surface.as_ref().context("surface missing")?,
+        state.render_surface()?,
         width,
         height,
     )?;
+    if staging {
+        window.disable_swap_throttle()?;
+    }
     let (native_display, native_context) = window.handles()?;
-    // SAFETY: foreign display wrapper does not terminate EGLDisplay. Window owns
-    // it and remains alive until after every pipeline, context and sample below.
+    // SAFETY: the foreign wrapper does not terminate EGLDisplay. The retained
+    // native session outlives every pipeline, borrowed context and sample below.
     let display = unsafe {
         gstreamer_gl_egl::GLDisplayEGL::with_egl_display(native_display.as_ptr() as usize)
     }
@@ -132,7 +150,7 @@ pub fn run() -> Result<()> {
     wrapped.0.fill_info()?;
     let gl = window.gl()?;
     let painter = gl_painter::Painter::new(gl, args.gl_api)?;
-    let mut media = media::Media::new(&args.video, &display, &wrapped.0, writer)?;
+    let mut media = media::Media::new(&args.video, &display, &wrapped.0, writer, staging)?;
     // Drop order is deliberate: samples/fences before Media's NULL transition,
     // Media before Wrapped/GLDisplayEGL, all before Window/EGL termination.
     let finishes = Cell::new(0);
@@ -147,11 +165,21 @@ pub fn run() -> Result<()> {
     let mut clicks = 0;
     let mut ready = false;
     let mut feedback_deadline = None;
+    let mut published = !staging;
+    let mut playback_started = !staging;
+    let mut published_size = None;
+    let mut staged_ready = false;
+    let mut publication_deadline = None;
     let deadline = Instant::now() + Duration::from_secs(args.seconds);
     loop {
         queue.dispatch_pending(&mut state)?;
         let mut bytes = [0; 64];
         while reader.read(&mut bytes).is_ok_and(|count| count > 0) {}
+        let requested = control
+            .as_mut()
+            .map(|control| control.poll())
+            .transpose()?
+            .unwrap_or(false);
         media.messages()?;
         ensure!(!state.closed, "selected private output or witness closed");
         ensure!(
@@ -180,6 +208,25 @@ pub fn run() -> Result<()> {
                 "native video consumer fence timed out"
             );
         }
+        if let Some(until) = publication_deadline {
+            ensure!(
+                ready || Instant::now() < until,
+                "staged video presentation/input timed out"
+            );
+        }
+        if staging && published {
+            ensure!(
+                state.configured == published_size,
+                "this diagnostic only stages video geometry before first publication"
+            );
+        }
+        if staging && published && !playback_started && state.presented > 0 {
+            // Start the media clock only after the initial PTS-zero buffer is
+            // actually visible, rather than while its parent commit is queued.
+            media.resume()?;
+            playback_started = true;
+            eprintln!("Native GL video first frame presented; playback started");
+        }
         if state.witness_buttons >= clicks + 2 {
             clicks = state.witness_buttons;
             eprintln!("Private video click-through confirmed ({clicks} button events)");
@@ -196,7 +243,7 @@ pub fn run() -> Result<()> {
             "native video probe exceeded its bounded duration"
         );
         ensure!(
-            ready || Instant::now() < startup,
+            ready || staging && staged_ready || Instant::now() < startup,
             "native video presentation/input readiness timed out"
         );
         // Exercise input between confirmed presentation and the next commit.
@@ -204,6 +251,9 @@ pub fn run() -> Result<()> {
         if !state.pending_feedback && leases.len() < 3 {
             if let Some(sample) = media.take()? {
                 current = Some(sample);
+                state.dirty = true;
+            }
+            if staging && requested && !published && current.is_some() {
                 state.dirty = true;
             }
             if state.dirty
@@ -226,6 +276,7 @@ pub fn run() -> Result<()> {
                 }
                 let (width, height) = state.configured.context("layer configure missing")?;
                 window.resize(width, height)?;
+                let publish_this = published || requested && !window.refresh_required();
                 let mut lease = shared_gl::Lease {
                     gl,
                     sample: Some(sample.clone()),
@@ -237,21 +288,50 @@ pub fn run() -> Result<()> {
                 painter.draw(&source, None, [0, 0, width, height])?;
                 lease.seal()?;
                 let id = records.len() as u64 + 1;
-                state.request_frame_feedback(&queue.handle(), id)?;
+                if publish_this {
+                    state.request_frame_feedback(&queue.handle(), id)?;
+                }
                 window.present()?;
                 let geometry_refresh_required = window.take_refresh();
+                if staging {
+                    staged_ready |= !geometry_refresh_required;
+                    if publish_this {
+                        state.publish_staged()?;
+                        if !published {
+                            published = true;
+                            published_size = Some((width, height));
+                            publication_deadline = Some(Instant::now() + Duration::from_secs(5));
+                            eprintln!(
+                                "Native GL video parent published {width}x{height}; playback paused"
+                            );
+                        }
+                    } else {
+                        state.flush_staged()?;
+                        if !geometry_refresh_required {
+                            eprintln!(
+                                "Native GL video staged {width}x{height}; paused parent held"
+                            );
+                        }
+                    }
+                }
                 records.push(
                     serde_json::json!({"id":id,"pts_ns":source.pts_ns,"loop":completed_loops,
                     "logical_size":[width,height],"texture_id":source.texture.0.get(),
-                    "geometry_refresh_required":geometry_refresh_required}),
+                    "geometry_refresh_required":geometry_refresh_required,"published":publish_this}),
                 );
                 leases.push_back(lease);
                 peak = peak.max(leases.len());
                 state.dirty = geometry_refresh_required;
-                feedback_deadline = Some(Instant::now() + Duration::from_secs(5));
+                if publish_this {
+                    feedback_deadline = Some(Instant::now() + Duration::from_secs(5));
+                }
+                if staging && !published && geometry_refresh_required {
+                    connection.flush()?;
+                    continue;
+                }
             }
         }
-        if media.eos && !media.has_sample()? && !state.pending_feedback {
+        if published && media.eos && !media.has_sample()? && !state.pending_feedback {
             // Holding a sample across FLUSH can deadlock decoder pool shutdown.
             current.take();
             if leases.is_empty() {
@@ -263,30 +343,52 @@ pub fn run() -> Result<()> {
                 eprintln!("Native GL video rewound after draining consumer samples");
             }
         }
-        let mut next = deadline.min(if ready { deadline } else { startup });
-        for time in [feedback_deadline, fence_deadline].into_iter().flatten() {
+        let mut next = deadline.min(if ready || staging && staged_ready {
+            deadline
+        } else {
+            startup
+        });
+        for time in [
+            feedback_deadline,
+            fence_deadline,
+            publication_deadline.filter(|_| !ready),
+        ]
+        .into_iter()
+        .flatten()
+        {
             next = next.min(time);
         }
         if !leases.is_empty() {
             next = next.min(Instant::now() + Duration::from_millis(1));
         }
-        wait(&mut queue, &connection, &reader, next)?;
+        if let Some(control) = &control {
+            wayland_poll::wait_fds(
+                &mut queue,
+                &connection,
+                &[reader.as_fd(), control.as_fd()],
+                next,
+            )?;
+        } else {
+            wait(&mut queue, &connection, &reader, next)?;
+        }
     }
     current.take();
     while shared_gl::retire_one(&mut leases, true, &AtomicBool::new(false))? {
         retired += 1;
     }
+    let cancelled = staging && !published && stopped.load(Ordering::Relaxed);
     ensure!(
-        ready,
+        ready || cancelled,
         "probe stopped before actual presentation/input validation"
     );
     let (received, replaced) = media.counters()?;
     let counts = window.counts();
-    let mut report = serde_json::json!({"schema_version":1,"status":"passed","scope":"shared_video_into_owned_private_wayland_surface",
+    let mut report = serde_json::json!({"schema_version":1,"status":if cancelled {"cancelled_before_publish"} else {"passed"},"scope":"shared_video_into_owned_private_wayland_surface",
         "gl":window.report()?,"gstreamer":gst::version_string().to_string(),"egl_context_creations":1,
         "input_region":"empty","witness_button_events":clicks,"frames":records,"presented_frame_ids":state.presented_frame_ids,
         "presented":state.presented,"discarded":state.discarded,"completed_loops":completed_loops,
         "interrupted":stopped.load(Ordering::Relaxed),"source_size":source_size,"input_memory":first_memory,
+        "staging":{"enabled":staging,"prepared":staged_ready,"published":published,"playback_started":playback_started},
         "consumer_cpu_buffer_maps":0,"consumer_readbacks":0,"consumer_offscreen_targets":0,
         "decoders":media.decoders()?,"decoder_buffers":media.decoder_buffers()?,
         "delivery":{"received":received,"replaced":replaced,"latest_slot_limit":1},

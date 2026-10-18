@@ -47,6 +47,57 @@ seek. Shutdown disables delivery, clears its slot, removes callbacks and sets th
 to NULL while the native context is still alive. The diagnostic allows 1–3 loops, at most
 240 draw records, a 30-second maximum duration, and bounded frame/buffer dimensions.
 
+## Optional paused video publication
+
+```sh
+python3 scripts/test_native_gl_video.py --staged
+python3 scripts/test_native_gl_video.py --staged --gl-api gles
+python3 scripts/test_native_gl_video.py --staged --nvidia
+# Hold past initial startup timeout, then publish without spinning:
+python3 scripts/test_native_gl_video.py --staged --hold-seconds 11
+```
+
+The private `--staged-control PATH` mode combines the
+[unmapped parent publication boundary](staged-egl-probe.md) with shared video textures.
+The pipeline starts in PAUSED. An appsink `new_preroll` callback transfers the initial
+sample into the same bounded delivery slot used for playing samples. It does not perform
+GL work or wait for the consumer. GStreamer's
+[preroll contract](https://gstreamer.freedesktop.org/documentation/app/appsink.html#pull-preroll)
+also returns that buffer as the first playing sample; repeated PTS zero after resuming is
+expected. Consumer draws still retain samples until their GPU fences signal.
+
+The first frame stays retained while native drawable resizing is primed behind the
+unmapped parent. There is no continuous playback or repaint timer during this hold.
+One exact private `publish\n` command draws a fresh, correctly sized frame, requests
+child presentation feedback and maps the parent. Actual presentation of that first frame
+then transitions the same pipeline to PLAYING, so the media clock does not advance while
+the initial commit waits for the compositor. Readiness also requires real click-through. Published
+frames carry `published: true`; hidden records must never appear in the presented-ID
+history. Cancellation before publication releases samples/fences before stopping the
+pipeline and reports `cancelled_before_publish`, with zero presented frames.
+
+The staged harness resizes before publication, checks held witness pixels and idle CPU,
+then checks original animated pixels, two loops, fence retirement, selected output,
+SIGINT, cancellation while paused, malformed control/media, input interception,
+SIGKILL before/after publication and compositor loss. Both APIs run in software CI on
+Ubuntu 26.04; hardware mode requires the same NVIDIA source/caps/log evidence as normal
+qualification. The static parent proof separately covers Ubuntu 24.04's older compositor;
+the combined video path still requires GStreamer 1.26 or newer.
+
+Private Mesa 26.0.8/GStreamer 1.28.2 tests passed desktop GL and GLES; the explicit
+NVIDIA 580.178.04/GStreamer 1.26.11 run passed desktop GL. Each displayed all twelve
+original markers with zero sampled channel error, completed two loops and confirmed
+26 published commits. Mesa recorded three hidden preroll draws, including one geometry
+refresh; NVIDIA recorded two. All consumer fences retired without normal-path `glFinish`.
+An eleven-second software hold passed with no new draws and 0.0 process CPU seconds at
+procfs tick resolution. This is a bounded idle observation, not a sustained power budget.
+
+This mode intentionally rejects geometry changes after publication. Keeping old content
+visible while staging a replacement or resizing an already mapped output remains a
+separate gate, along with general pause/visibility policy, decode sharing and worker
+transactions. The normal diagnostic and production video backend retain their existing
+behavior.
+
 ## Validation and remaining gates
 
 The private Ubuntu 26.04/Sway 1.11/Mesa 26.0.8/GStreamer 1.28.2 run on 2026-10-18 passed
