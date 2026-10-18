@@ -7,6 +7,10 @@ diagnostic helps distinguish CPU conversion, GPU conversion with readback, and s
 DMA-BUF delivery. Use the [worker benchmark](video-performance.md)
 to measure the full layer-shell path separately.
 
+The opt-in [owned EGL/shared-texture proof](owned-gl-video-probe.md) separately checks
+drawing a producer texture in Rust's own GL context without mapping its source buffer.
+It captures one frame and does not replace the sustained CPU-consumption measurement.
+
 Build on Linux with the normal video dependencies:
 
 ```sh

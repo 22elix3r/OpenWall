@@ -48,6 +48,9 @@ jobs:
       - name: Measurement harness process tests
         run: python3 -m unittest discover -s scripts/tests -v
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Optional shared-GL probe compile checks
+        if: runner.os == 'Linux'
+        run: cargo clippy -p openwall --example owned_gl_video_probe --features video-gl-probe --locked -- -D warnings
       - run: cargo build --workspace --locked
       - name: Save compiled dependencies before native integration tests
         if: steps.rust-cache.outputs.cache-hit != 'true'
@@ -90,6 +93,24 @@ jobs:
       - name: SDR video conversion regressions
         if: runner.os == 'Linux'
         run: /usr/bin/python3 scripts/test_video_color.py --software-gl
+      - name: Owned GL shared-texture color and boundary checks
+        if: matrix.os == 'ubuntu-26.04'
+        run: |
+          cargo build -p openwall --example owned_gl_video_probe --features video-gl-probe --locked
+          /usr/bin/python3 scripts/test_video_color.py --software-gl --owned-gl-binary target/debug/examples/owned_gl_video_probe
+      - name: Older GL runtime rejection
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          cargo build -p openwall --example owned_gl_video_probe --features video-gl-probe --locked
+          /usr/bin/python3 - <<'PY'
+          import os, subprocess
+          result = subprocess.run(["target/debug/examples/owned_gl_video_probe", "/tmp/openwall-loop.webm",
+                                   "--first-frame", "/tmp/openwall-old-gl.png"],
+                                  env=dict(os.environ, GST_GL_WINDOW="surfaceless"),
+                                  capture_output=True, text=True, timeout=10)
+          assert result.returncode != 0 and "requires GStreamer 1.26 or newer" in result.stderr, result
+          assert not result.stdout.strip() and not os.path.exists("/tmp/openwall-old-gl.png"), result
+          PY
       - name: GUI startup
         env:
           QT_QPA_PLATFORM: offscreen

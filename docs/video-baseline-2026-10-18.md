@@ -59,6 +59,42 @@ The numbers do not establish a complete transfer saving, justify changing the de
 renderer or qualify GPU-resident playback. Follow-up comparisons must explicitly consume
 the CPU-bound frames and report their actual allocator types as well as caps.
 
+## Follow-up with explicit CPU consumption
+
+The Rust [transfer probe](video-transfer-probe.md) repeated the comparison with software
+`vp9dec` and a map/copy of every RGBA frame. Three alternating runs per mode used a
+five-second warm-up followed by 30 seconds of measurement, on the same host listed above.
+This separate, windowless experiment used a fully tagged BT.709 limited-range 1080p30
+original VP9 fixture. Both the raw encoder input and its output carried the tags;
+decoder caps confirmed `colorimetry=bt709`.
+
+| Conversion plus explicit CPU consumer | Median CPU | CPU range | Final allocator |
+| --- | ---: | ---: | --- |
+| CPU `videoconvert` | 15.174% | 14.897–15.185% | `SystemMemory` |
+| GL conversion/download | 28.006% | 27.785–28.185% | `GLMemoryPBO` |
+
+Each copied frame contained 8,294,400 bytes. CPU runs consumed 1,049 frames and GL runs
+1,047 frames across startup, warm-up and measurement; all looped 17 times and completed.
+These totals cover more than the timed sample and must not be interpreted as presented
+or dropped frame counts. Process CPU includes native media threads and is expressed as
+a percentage of one core. GL used the NVIDIA surfaceless OpenGL driver, not software GL.
+
+Source revision: `db2d3a188c1198e731c9cb0d18c80bf133bd835f`.
+Release binary SHA-256: `489a0e6abf09a5c4e79b76c9138391e28e90ca2a14a7b302982f2ca1ba0bc90f`.
+Media SHA-256: `056cee3614557e8610089fdfd9f3e707d5f0a973ebc5b44ab700c410bc197394`.
+Child environment: `GST_PLUGIN_FEATURE_RANK=vp9dec:MAX`, `GST_GL_WINDOW=surfaceless`,
+`GST_GL_PLATFORM=egl`, `GST_GL_API=opengl`, `EGL_PLATFORM=surfaceless`; inherited
+`LIBVA_DRIVER_NAME=nvidia` and `__GLX_VENDOR_LIBRARY_NAME=nvidia` were unchanged.
+A separate renderer diagnostic identified NVIDIA 580.178.04/OpenGL 4.6. The runs used
+a private GStreamer registry and no desktop display connection.
+
+Including actual readback reverses the earlier fake-sink observation: GL conversion
+followed by CPU consumption cost more CPU in this experiment. These results use software
+decoding and a controlled full-buffer copy; they do not reproduce waylandsink's allocator,
+measure presentation/energy or compare against a shared-texture consumer. They support
+investigating [direct texture consumption](owned-gl-video-probe.md), not changing the
+default production renderer. Foreground activity and GPU power state remained uncontrolled.
+
 Before selecting a GL presenter, verify pixel/color fidelity, default input regions of
 its embedded subsurfaces, resize/teardown and hardware buffer synchronization. Retain
 the compositor pixel/lifecycle tests and compare sustained energy against equivalent
