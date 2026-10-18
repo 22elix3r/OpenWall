@@ -52,8 +52,11 @@ Losing the presentation host terminates a connected worker with an error.
 
 For the proof, the test starts `openwall preview` with `WAYLAND_DISPLAY` pointing to
 that exact private socket. Scene workers use their existing winit/wgpu presentation.
-Video uses a native GStreamer Wayland sink. Socket globbing is test-only discovery;
-normal application integration needs a versioned handshake identifying output,
+Video uses a native GStreamer Wayland sink inside an OpenWall-owned XDG root and separate
+container subsurface. The root maps only after decoded data reaches the sink. Resize
+keeps the decoder alive, and desktop widgets stay above both scenes and video. Socket
+globbing is test-only discovery; normal application integration needs a versioned
+handshake identifying output,
 activity, capabilities, scale and trusted worker lifetime before automatic launch.
 
 Desktop detection currently uses Plasma `DesktopView` window properties. An ordinary

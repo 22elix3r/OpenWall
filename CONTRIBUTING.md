@@ -9,6 +9,11 @@ code should include OS/compositor/GPU versions and actual hardware evidence. A c
 check alone does not establish desktop support. Keep unsafe/native code small and explain
 pointer, thread and lifetime requirements at each boundary.
 
+Push changes to a feature branch and open a pull request. The protected `main` branch
+requires current Ubuntu and macOS CI checks and resolved review conversations, including
+for maintainers. Force pushes and branch deletion are disabled. An approving review is
+not currently mandatory while the project has a single maintainer.
+
 Compatibility work needs an original minimal fixture, a description of the observed
 behavior/reference version, expected output and explicit unsupported cases. Do not upload
 third-party wallpaper content or copy proprietary engine resources into fixtures. Keep

@@ -8,7 +8,7 @@ description = "Open-source desktop wallpapers and Wallpaper Engine compatibility
 
 [features]
 default = ["video"]
-video = ["dep:gstreamer", "dep:gstreamer-video", "dep:tempfile"]
+video = ["dep:gstreamer", "dep:gstreamer-video"]
 
 [dependencies]
 openwall-core.workspace = true
@@ -28,10 +28,9 @@ raw-window-handle = "0.6"
 wayland-client = { version = "0.31", features = ["system"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-rustix = { version = "1", features = ["event"] }
+rustix = { version = "1", features = ["event", "fs"] }
 gstreamer = { version = "0.24", optional = true }
 gstreamer-video = { version = "0.24", optional = true }
-tempfile = { version = "3", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
