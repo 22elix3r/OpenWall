@@ -72,6 +72,11 @@ investigation. A future GL presenter must qualify its actual runtime and retain 
 fallback on affected versions. Do not switch production playback based on 1.26 results
 alone.
 
+The CI matrix includes Ubuntu 24.04 and 26.04 so both the older compatibility baseline
+and a newer runtime exercise these checks. Build caches are isolated by runner label;
+native objects built against one distribution's Qt/media libraries are not restored
+on the other distribution.
+
 ## Limits
 
 Software GL checks are deterministic infrastructure checks, not hardware qualification.

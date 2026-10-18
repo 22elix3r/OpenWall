@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest]
+        os: [ubuntu-24.04, ubuntu-26.04, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:
@@ -37,8 +37,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-rust-v1-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-rust-v1-
+          key: ${{ matrix.os }}-rust-v2-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-rust-v2-
       - run: cargo fmt --all --check
       - name: Integration probe syntax
         run: |
