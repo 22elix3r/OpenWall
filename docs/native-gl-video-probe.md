@@ -150,7 +150,9 @@ aspect/fit policy, full-resolution HiDPI rendering, display color management, HD
 formats, other desktop environments, multi-output presentation or macOS behavior.
 The diagnostics now use a [shared EGL session owner](shared-egl-session-probe.md) for
 display/context lifetime, with separately retained native windows. Production still needs
-general output management and video sharing on top of that bounded ownership proof.
+general output management on top of that bounded ownership proof. The optional
+[two-output video diagnostic](shared-video-outputs-probe.md) exercises one decoder and
+shared source texture through removal of its first native window.
 Decoder sharing, device affinity, pause/resume, visibility policy and transactional apply
 remain required before replacing the normal video backend. The separate
 [desktop GL qualification](desktop-gl-video-interop.md) describes NVIDIA's transfer

@@ -9,6 +9,8 @@ mod gl_api;
 #[path = "../probe_support/gl_painter.rs"]
 mod gl_painter;
 mod media;
+#[path = "../probe_support/native_media_context.rs"]
+mod native_media_context;
 #[path = "../probe_support/publish_control.rs"]
 mod publish_control;
 #[path = "../probe_support/shared_gl.rs"]
@@ -20,7 +22,6 @@ mod wayland;
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use gstreamer as gst;
-use gstreamer_gl::{self as gst_gl, prelude::*};
 #[path = "../probe_support/wayland_poll.rs"]
 mod wayland_poll;
 use std::{
@@ -56,13 +57,6 @@ struct Args {
     /// Private harness gate: preroll paused, then publish on one exact command.
     #[arg(long)]
     staged_control: Option<PathBuf>,
-}
-
-struct Wrapped(gst_gl::GLContext);
-impl Drop for Wrapped {
-    fn drop(&mut self) {
-        let _ = self.0.activate(false);
-    }
 }
 
 pub fn run() -> Result<()> {
@@ -122,37 +116,18 @@ pub fn run() -> Result<()> {
     if staging {
         window.disable_swap_throttle()?;
     }
-    let (native_display, native_context) = window.handles()?;
-    // SAFETY: the foreign wrapper does not terminate EGLDisplay. The retained
-    // native session outlives every pipeline, borrowed context and sample below.
-    let display = unsafe {
-        gstreamer_gl_egl::GLDisplayEGL::with_egl_display(native_display.as_ptr() as usize)
-    }
-    .context("could not borrow owned Wayland EGLDisplay")?;
-    let api = match args.gl_api {
-        gl_api::Api::Desktop => gst_gl::GLAPI::OPENGL3,
-        gl_api::Api::Gles => gst_gl::GLAPI::GLES2,
-    };
-    display.filter_gl_api(api);
-    // SAFETY: Window's context is current on this thread for the whole diagnostic.
-    let wrapped = Wrapped(
-        unsafe {
-            gst_gl::GLContext::new_wrapped(
-                &display,
-                native_context.as_ptr() as usize,
-                gst_gl::GLPlatform::EGL,
-                api,
-            )
-        }
-        .context("could not wrap current Wayland GL context")?,
-    );
-    wrapped.0.activate(true)?;
-    wrapped.0.fill_info()?;
+    let sharing = native_media_context::Sharing::new(native_session.clone(), args.gl_api)?;
     let gl = window.gl()?;
     let painter = gl_painter::Painter::new(gl, args.gl_api)?;
-    let mut media = media::Media::new(&args.video, &display, &wrapped.0, writer, staging)?;
+    let mut media = media::Media::new(
+        &args.video,
+        &sharing.display,
+        &sharing.wrapped,
+        writer,
+        staging,
+    )?;
     // Drop order is deliberate: samples/fences before Media's NULL transition,
-    // Media before Wrapped/GLDisplayEGL, all before Window/EGL termination.
+    // Media before the sharing guard, all before Window/EGL termination.
     let finishes = Cell::new(0);
     let mut leases = VecDeque::new();
     let mut current = None;
@@ -263,7 +238,7 @@ pub fn run() -> Result<()> {
                     records.len() < 240,
                     "native video diagnostic frame limit exceeded"
                 );
-                let source = shared_gl::source(sample, &wrapped.0, gl)?;
+                let source = shared_gl::source(sample, &sharing.wrapped, gl)?;
                 let size = (source.width, source.height);
                 ensure!(
                     source_size.is_none_or(|previous| previous == size),
@@ -397,8 +372,7 @@ pub fn run() -> Result<()> {
     drop(leases);
     drop(media);
     drop(painter);
-    drop(wrapped);
-    drop(display);
+    drop(sharing);
     drop(window);
     drop(native_session);
     report["egl_lifecycle"] = counts.snapshot();
