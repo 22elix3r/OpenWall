@@ -209,6 +209,14 @@ Private Mesa/NVIDIA tests require actual old/candidate/restored presentation, sa
 transition pixels, click-through and abort retaining the previous image. Replacement
 between real media pipelines and transactional worker apply remain open.
 
+The [two-source video diagnostic](video-replacement-probe.md) now applies that boundary
+to distinct media pipelines: the previous source keeps moving and loops while a paused
+candidate is held; publication starts its clock after presentation; explicit rollback
+redraws the retained previous PTS and resumes that same source. Private Mesa/NVIDIA tests
+also retain moving previous video after candidate abort or malformed-media failure.
+Automatic recovery after publication, repeated transactions, changing output geometry
+and the production manager/worker integration remain open.
+
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,
   Finder icons, fullscreen behavior and native app activation.
 - Multiple monitors, fractional/mixed scaling, output rotations, mixed refresh,

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #[path = "nested.rs"]
 mod nested;
+#[allow(dead_code)] // The two-source diagnostic uses a persistent root with two native children.
+pub(super) mod video_tree;
 use anyhow::{Context, Result, ensure};
 use std::{collections::BTreeMap, io::Write, os::fd::AsFd};
 use wayland_client::{
@@ -426,10 +428,20 @@ impl State {
     }
 
     pub fn request_frame_feedback(&mut self, qh: &QueueHandle<Self>, frame_id: u64) -> Result<()> {
+        let surface = self.render_surface()?.clone();
+        self.request_surface_feedback(qh, &surface, frame_id)
+    }
+
+    pub fn request_surface_feedback(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        frame_id: u64,
+    ) -> Result<()> {
         self.presentation
             .as_ref()
             .context("presentation feedback missing")?
-            .feedback(self.render_surface()?, qh, frame_id);
+            .feedback(surface, qh, frame_id);
         self.pending_feedback = true;
         Ok(())
     }
