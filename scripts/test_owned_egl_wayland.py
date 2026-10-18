@@ -25,6 +25,7 @@ def cpu_seconds(pid):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/examples/owned_egl_wayland_probe")
+    parser.add_argument("--gl-api", choices=["gles", "desktop"], default="gles")
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
     sway = shutil.which("sway")
@@ -50,7 +51,7 @@ def main():
             def spawn(extra=()):
                 log = (session.directory / f"egl-{len(session.logs)}.log").open("w+")
                 session.logs.append(log)
-                child = subprocess.Popen([str(binary), "--output", output, "--seconds", "30", *extra],
+                child = subprocess.Popen([str(binary), "--gl-api", args.gl_api, "--output", output, "--seconds", "30", *extra],
                                          env=session.env, stdout=subprocess.PIPE, stderr=log, text=True)
                 session.workers.append(child)
                 return child, log
@@ -86,6 +87,7 @@ def main():
             assert report["egl_context_creations"] == 1 and report["presented"] >= 5, report
             assert report["witness_button_events"] >= clicks and report["input_region"] == "empty", report
             assert "llvmpipe" in report["gl"]["renderer"].lower(), report
+            assert report["gl"]["api"] == args.gl_api, report
             wait_for(empty, "EGL and witness surfaces removed after SIGINT")
 
             # A negative control proves that real pointer hit-testing, rather than

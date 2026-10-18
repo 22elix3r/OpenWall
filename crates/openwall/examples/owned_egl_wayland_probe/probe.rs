@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #[path = "egl_window.rs"]
 mod egl_window;
+#[path = "../probe_support/gl_api.rs"]
+mod gl_api;
 #[path = "wayland.rs"]
 mod wayland;
 
@@ -27,6 +29,8 @@ struct Args {
     /// Negative control: leave the EGL overlay's input region opaque.
     #[arg(long)]
     intercept_input: bool,
+    #[arg(long, value_enum, default_value_t=gl_api::Api::Gles)]
+    gl_api: gl_api::Api,
 }
 
 pub fn run() -> Result<()> {
@@ -105,6 +109,7 @@ pub fn run() -> Result<()> {
                     state.surface.as_ref().context("native surface missing")?,
                     width,
                     height,
+                    args.gl_api,
                 )?);
                 creations += 1;
             }
