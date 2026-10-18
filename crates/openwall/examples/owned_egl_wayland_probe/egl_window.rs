@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+use super::gl_api::Api;
 use anyhow::{Context, Result, ensure};
 use glow::HasContext;
 use khronos_egl as egl;
@@ -13,6 +14,7 @@ pub struct Window {
     window: Option<wayland_egl::WlEglSurface>,
     gl: Option<glow::Context>,
     size: (u32, u32),
+    selected: Api,
     // The connection and wl_surface outlive the native EGL wrappers. The caller
     // must also keep the protocol object undestroyed until this guard is dropped.
     _connection: Connection,
@@ -26,6 +28,7 @@ impl Window {
         surface: &WlSurface,
         width: u32,
         height: u32,
+        selected: Api,
     ) -> Result<Self> {
         validate_size(width, height)?;
         // SAFETY: system EGL ABI; library handle stays alive through native destruction.
@@ -50,11 +53,12 @@ impl Window {
             window: None,
             gl: None,
             size: (width, height),
+            selected,
             _connection: connection.clone(),
             _surface: surface.clone(),
             _thread: PhantomData,
         };
-        owned.api.bind_api(egl::OPENGL_ES_API)?;
+        owned.api.bind_api(selected.egl_api())?;
         let config = owned
             .api
             .choose_first_config(
@@ -63,7 +67,7 @@ impl Window {
                     egl::SURFACE_TYPE,
                     egl::WINDOW_BIT,
                     egl::RENDERABLE_TYPE,
-                    egl::OPENGL_ES3_BIT,
+                    selected.renderable(),
                     egl::RED_SIZE,
                     8,
                     egl::GREEN_SIZE,
@@ -75,12 +79,12 @@ impl Window {
                     egl::NONE,
                 ],
             )?
-            .context("no GLES3 Wayland window configuration")?;
+            .context("no Wayland EGL configuration for the selected GL API")?;
         owned.context = Some(owned.api.create_context(
             display,
             config,
             None,
-            &[egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE],
+            selected.context_attributes(),
         )?);
         owned.window = Some(wayland_egl::WlEglSurface::new(
             surface.id(),
@@ -164,7 +168,7 @@ impl Window {
         let gl = self.gl.as_ref().context("GL context missing")?;
         // SAFETY: context remains current on this thread.
         Ok(unsafe {
-            serde_json::json!({"vendor":gl.get_parameter_string(glow::VENDOR),
+            serde_json::json!({"api":self.selected.name(),"vendor":gl.get_parameter_string(glow::VENDOR),
             "renderer":gl.get_parameter_string(glow::RENDERER),"version":gl.get_parameter_string(glow::VERSION)})
         })
     }

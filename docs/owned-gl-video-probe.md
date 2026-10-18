@@ -17,7 +17,7 @@ multi-frame runs require an atlas path. The video must contain the requested num
 frames. `--paced` delivers frames on GStreamer's media clock; it does not add presentation
 feedback or qualify playback timing.
 
-It needs system EGL with GLES 3, GStreamer GL plugins and GStreamer 1.26 or newer. The
+It needs system EGL with GLES 3 or desktop core OpenGL 3.3, GStreamer GL plugins and GStreamer 1.26 or newer. The
 feature is opt-in; normal workers do not load the new GL dependencies. The older runtime
 is rejected because its [full-range conversion is not qualified](video-color.md).
 The output PNG must not exist; existing files and symlinks are never overwritten.
@@ -26,7 +26,7 @@ a blocked native driver call or teardown.
 
 ## Ownership and synchronization
 
-Rust owns a GLES context and a 1×1 pbuffer on a surfaceless EGL display. A wrapped
+Rust owns a GL context and a 1×1 pbuffer on a surfaceless EGL display. A wrapped
 `GstGLContext` and the same `GstGLDisplay` are supplied to the pipeline before playback.
 GStreamer creates its producer context in that share group. The supplied sink bin is
 `glupload → glcolorconvert → RGBA GLMemory/2D caps → bounded appsink`; playbin's implicit
@@ -80,11 +80,15 @@ three-sample bound and zero successful-path consumer finishes. Local Mesa 25.3.6
 1.26.11 runs reused three textures across 24 frames, peaked at two in-flight leases and
 matched every sampled channel exactly. Early EOS and SIGINT must fail without captures.
 
-A separate windowless 1080p draw succeeded on NVIDIA 580.178.04/GLES 3.2. Its selected
-`nvvp9dec` delivered system-memory NV12 before upload, so it does not establish resident
-hardware decoding. `GstGLMemoryPBOAllocator` at the consumer still represents a GL texture;
-this path does not map the PBO. The separate [CPU-consumption measurement](video-baseline-2026-10-18.md)
-shows why mapping deferred readback must be accounted for when a CPU consumer is required.
+Both `--gl-api gles` (default) and `--gl-api desktop` are qualified separately. Match
+`GST_GL_API=gles2` or `GST_GL_API=opengl3` to the selected API. The report records actual
+first decoder-buffer memory types as well as negotiated caps; its bounded one-shot pad
+probes never map those buffers. [NVIDIA qualification](desktop-gl-video-interop.md) found
+PBO-backed GL memory even behind the decoder's system-memory contract. Desktop GL selected
+its GPU copy path; GLES selected its CPU-mapped fallback. Allocator type alone is therefore
+insufficient evidence of resident hardware decoding. The consumer does not map either
+source. The separate [CPU-consumption measurement](video-baseline-2026-10-18.md) also shows
+why deferred readback must be included when a CPU consumer is required.
 
 This is a bounded interoperability and buffer-reuse check. It does not qualify sustained
 playback, looping, hardware color accuracy, HDR, display color interpretation,

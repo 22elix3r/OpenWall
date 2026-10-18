@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#[path = "../probe_support/gl_api.rs"]
+mod gl_api;
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
+use gl_api::Api;
 use glow::HasContext;
 use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_gl::{self as gst_gl, prelude::*};
@@ -8,14 +11,14 @@ use image::ImageEncoder;
 use khronos_egl as egl;
 use std::{
     cell::Cell,
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     fs::OpenOptions,
     marker::PhantomData,
     num::NonZeroU32,
     path::PathBuf,
     rc::Rc,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -37,6 +40,8 @@ struct Args {
     /// Pace appsink delivery on the media clock; this is not presentation feedback.
     #[arg(long)]
     paced: bool,
+    #[arg(long, value_enum, default_value_t=Api::Gles)]
+    gl_api: Api,
 }
 
 struct NativeContext {
@@ -50,7 +55,7 @@ struct NativeContext {
 }
 
 impl NativeContext {
-    fn new() -> Result<Self> {
+    fn new(selected: Api) -> Result<Self> {
         // SAFETY: load the system EGL ABI. The instance outlives all function pointers,
         // contexts and surfaces created below; no wallpaper path selects native code.
         let api = unsafe {
@@ -70,7 +75,7 @@ impl NativeContext {
             surface: None,
             _thread: PhantomData,
         };
-        native.api.bind_api(egl::OPENGL_ES_API)?;
+        native.api.bind_api(selected.egl_api())?;
         let config = native
             .api
             .choose_first_config(
@@ -79,7 +84,7 @@ impl NativeContext {
                     egl::SURFACE_TYPE,
                     egl::PBUFFER_BIT,
                     egl::RENDERABLE_TYPE,
-                    egl::OPENGL_ES3_BIT,
+                    selected.renderable(),
                     egl::RED_SIZE,
                     8,
                     egl::GREEN_SIZE,
@@ -91,12 +96,12 @@ impl NativeContext {
                     egl::NONE,
                 ],
             )?
-            .context("no EGL GLES3 pbuffer configuration")?;
+            .context("no EGL configuration for the selected GL API")?;
         native.context = Some(native.api.create_context(
             display,
             config,
             None,
-            &[egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE],
+            selected.context_attributes(),
         )?);
         native.surface = Some(native.api.create_pbuffer_surface(
             display,
@@ -106,7 +111,7 @@ impl NativeContext {
         native
             .api
             .make_current(display, native.surface, native.surface, native.context)?;
-        native.gst_display.filter_gl_api(gst_gl::GLAPI::GLES2);
+        native.gst_display.filter_gl_api(gst_api(selected));
         Ok(native)
     }
 }
@@ -191,7 +196,13 @@ fn shader(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::NativeSha
 }
 
 impl<'a> Target<'a> {
-    fn new(gl: &'a glow::Context, width: u32, height: u32, frames: u16) -> Result<Self> {
+    fn new(
+        gl: &'a glow::Context,
+        width: u32,
+        height: u32,
+        frames: u16,
+        selected: Api,
+    ) -> Result<Self> {
         let atlas_height = height * u32::from(frames);
         ensure!(
             atlas_height <= 16_384
@@ -216,12 +227,17 @@ impl<'a> Target<'a> {
             let texture = gl.create_texture().map_err(anyhow::Error::msg)?;
             target.texture = Some(texture);
             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-            gl.tex_storage_2d(
+            // Mutable storage also works on core GL 3.3 without ARB_texture_storage.
+            gl.tex_image_2d(
                 glow::TEXTURE_2D,
-                1,
-                glow::RGBA8,
+                0,
+                glow::RGBA8 as i32,
                 width as i32,
                 atlas_height as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
             );
             let framebuffer = gl.create_framebuffer().map_err(anyhow::Error::msg)?;
             target.framebuffer = Some(framebuffer);
@@ -247,10 +263,14 @@ impl<'a> Target<'a> {
             }
             let program = gl.create_program().map_err(anyhow::Error::msg)?;
             target.program = Some(program);
+            let header = match selected {
+                Api::Gles => "#version 300 es\nprecision highp float;",
+                Api::Desktop => "#version 330 core",
+            };
             let vertex = shader(
                 gl,
                 glow::VERTEX_SHADER,
-                r#"#version 300 es
+                &r#"#version 300 es
 precision highp float;
 uniform vec2 source_scale;
 out vec2 uv;
@@ -258,18 +278,20 @@ void main() {
     vec2 p = vec2[](vec2(-1., -1.), vec2(3., -1.), vec2(-1., 3.))[gl_VertexID];
     gl_Position = vec4(p, 0., 1.);
     uv = vec2((p.x + 1.) * .5, (1. - p.y) * .5) * source_scale;
-}"#,
+}"#
+                .replacen("#version 300 es\nprecision highp float;", header, 1),
             )?;
             let fragment = match shader(
                 gl,
                 glow::FRAGMENT_SHADER,
-                r#"#version 300 es
+                &r#"#version 300 es
 precision highp float;
 uniform sampler2D source_texture;
 in vec2 uv;
 out vec4 color;
 void main() { color = texture(source_texture, uv); }
-"#,
+"#
+                .replacen("#version 300 es\nprecision highp float;", header, 1),
             ) {
                 Ok(value) => value,
                 Err(error) => {
@@ -600,6 +622,76 @@ fn source(sample: &gst::Sample, wrapped: &gst_gl::GLContext, gl: &glow::Context)
     })
 }
 
+fn gst_api(selected: Api) -> gst_gl::GLAPI {
+    match selected {
+        Api::Gles => gst_gl::GLAPI::GLES2,
+        Api::Desktop => gst_gl::GLAPI::OPENGL3,
+    }
+}
+
+type DecoderBuffers = Arc<Mutex<BTreeMap<String, serde_json::Value>>>;
+
+fn watch_decoder_buffers(pipeline: &gst::Element) -> Result<DecoderBuffers> {
+    let result = DecoderBuffers::default();
+    let recorded = result.clone();
+    pipeline
+        .clone()
+        .downcast::<gst::Bin>()
+        .map_err(|_| anyhow::anyhow!("playbin is not a bin"))?
+        .connect_deep_element_added(move |_, _, element| {
+            let is_video_decoder = element.factory().is_some_and(|factory| {
+                factory
+                    .metadata("klass")
+                    .is_some_and(|klass| klass.contains("Decoder") && klass.contains("Video"))
+            });
+            if !is_video_decoder {
+                return;
+            }
+            if let Some(pad) = element.static_pad("src") {
+                let recorded = recorded.clone();
+                let name = element.name().to_string();
+                pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+                    if let Some(buffer) = info.buffer()
+                        && let Ok(mut recorded) = recorded.lock()
+                        && !recorded.contains_key(&name)
+                        && recorded.len() < 8
+                    {
+                        let count = buffer.n_memory();
+                        let all_gl = count > 0
+                            && count <= 16
+                            && (0..count).all(|index| {
+                                buffer
+                                    .peek_memory(index)
+                                    .downcast_memory_ref::<gst_gl::GLMemory>()
+                                    .is_some()
+                            });
+                        let allocators: Vec<_> = (0..count.min(16))
+                            .map(|index| {
+                                buffer
+                                    .peek_memory(index)
+                                    .allocator()
+                                    .map(|allocator| allocator.memory_type().to_string())
+                            })
+                            .collect();
+                        // Introspection only: no source memory is mapped or copied.
+                        recorded.insert(
+                            name.clone(),
+                            serde_json::json!({
+                                "memories": count,
+                                "all_memory_is_gl": all_gl,
+                                "allocator_types": allocators,
+                                "caps": pad.current_caps().map(|caps| caps.to_string()),
+                            }),
+                        );
+                        return gst::PadProbeReturn::Remove;
+                    }
+                    gst::PadProbeReturn::Ok
+                });
+            }
+        });
+    Ok(result)
+}
+
 pub fn run() -> Result<()> {
     let args = Args::parse();
     ensure!(
@@ -620,7 +712,7 @@ pub fn run() -> Result<()> {
         "owned GL color proof requires GStreamer 1.26 or newer"
     );
     let uri = glib::filename_to_uri(args.video.canonicalize()?, None)?;
-    let native = NativeContext::new()?;
+    let native = NativeContext::new(args.gl_api)?;
     // SAFETY: this live EGL context is current on this thread. NativeContext owns it
     // until after the wrapped context, pipeline, samples and GL resources are gone.
     let wrapped = WrappedContext(
@@ -629,14 +721,14 @@ pub fn run() -> Result<()> {
                 &native.gst_display,
                 native.context.context("EGL context missing")?.as_ptr() as usize,
                 gst_gl::GLPlatform::EGL,
-                gst_gl::GLAPI::GLES2,
+                gst_api(args.gl_api),
             )
         }
         .context("could not wrap the owned EGL context")?,
     );
     wrapped.0.activate(true)?;
     wrapped.0.fill_info()?;
-    // SAFETY: functions are loaded for the current GLES3 context; native retains EGL.
+    // SAFETY: functions are loaded for the selected current GL context; native retains EGL.
     let gl = unsafe {
         glow::Context::from_loader_function(|name| {
             native
@@ -673,6 +765,7 @@ pub fn run() -> Result<()> {
         .structure_mut()
         .set("context", &wrapped.0);
     pipeline.set_context(&app_context);
+    let decoder_buffers = watch_decoder_buffers(&pipeline)?;
     let playing = Playing(pipeline);
     playing.0.set_state(gst::State::Playing)?;
     let bus = playing.0.bus().context("pipeline has no bus")?;
@@ -701,7 +794,13 @@ pub fn run() -> Result<()> {
                 "dynamic frame dimensions are not supported by this proof"
             );
         } else {
-            target = Some(Target::new(&gl, source.width, source.height, args.frames)?);
+            target = Some(Target::new(
+                &gl,
+                source.width,
+                source.height,
+                args.frames,
+                args.gl_api,
+            )?);
         }
         let target = target.as_ref().context("owned target is missing")?;
         let mut lease = Lease {
@@ -755,11 +854,13 @@ pub fn run() -> Result<()> {
                 .is_some_and(|klass| klass.contains("Decoder") && klass.contains("Video"))
         {
             decoders.push(serde_json::json!({"factory":factory.name().to_string(),
-                "output_caps":element.static_pad("src").and_then(|pad| pad.current_caps()).map(|caps| caps.to_string())}));
+                "output_caps":element.static_pad("src").and_then(|pad| pad.current_caps()).map(|caps| caps.to_string()),
+                "first_actual_buffer":decoder_buffers.lock().map_err(|_|anyhow::anyhow!("decoder buffer trace poisoned"))?.get(element.name().as_str()).cloned()}));
         }
     }
     let result = serde_json::json!({
         "schema_version": 1, "status": "passed", "mode": "owned-gl",
+        "gl_api":args.gl_api.name(),
         "scope": if args.frames == 1 {"single_shared_texture_draw_into_owned_fbo"} else {"bounded_shared_texture_sequence_into_owned_atlas"},
         "gstreamer": gst::version_string().to_string(),
         "consumer_cpu_buffer_maps": 0,

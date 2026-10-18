@@ -9,41 +9,9 @@ import subprocess
 import tempfile
 
 from PIL import Image
+from video_color_fixtures import WIDTH, HEIGHT, PATCH_WIDTH, PATCH_HEIGHT, patches, original_yuv, expected_rgba
 
 ROOT = Path(__file__).resolve().parents[1]
-WIDTH, HEIGHT = 130, 68  # Deliberately not a common decoder/GL row alignment.
-PATCH_WIDTH, PATCH_HEIGHT = 26, 34
-
-
-def patches(full_range):
-    return [(0 if full_range else 16, 128, 128),
-            (255 if full_range else 235, 128, 128),
-            (81, 90, 240), (145, 54, 34), (41, 240, 110),
-            (126, 128, 128), (200, 80, 190), (64, 180, 90),
-            (100, 160, 160), (180, 100, 100)]
-
-
-def original_yuv(colors):
-    planes = []
-    for component, scale in [(0, 1), (1, 2), (2, 2)]:
-        plane = bytearray()
-        for row in range(HEIGHT // scale):
-            for column in range(WIDTH // scale):
-                patch = (row * scale // PATCH_HEIGHT) * 5 + column * scale // PATCH_WIDTH
-                plane.append(colors[patch][component])
-        planes.append(bytes(plane))
-    return b"".join(planes)
-
-
-def expected_rgba(yuv, matrix, full_range):
-    # Independently evaluate the BT.601/BT.709 Y'CbCr equations in floating point.
-    # No conversion implementation from OpenWall, GStreamer or FFmpeg is reused.
-    kr, kb = (.2126, .0722) if matrix == "bt709" else (.299, .114)
-    y = yuv[0] / 255 if full_range else (yuv[0] - 16) / 219
-    cb, cr = ((value - 128) / (255 if full_range else 224) for value in yuv[1:])
-    red, blue = y + 2 * (1 - kr) * cr, y + 2 * (1 - kb) * cb
-    green = (y - kr * red - kb * blue) / (1 - kr - kb)
-    return tuple(round(max(0, min(1, value)) * 255) for value in [red, green, blue]) + (255,)
 
 
 def main():
@@ -52,9 +20,12 @@ def main():
     parser.add_argument("--software-gl", action="store_true")
     parser.add_argument("--owned-gl-binary", type=Path,
                         help="also check the experimental single-frame shared-texture consumer")
+    parser.add_argument("--owned-gl-api", choices=["gles", "desktop"], default="gles")
     args = parser.parse_args()
     if args.owned_gl_binary and not args.software_gl:
         parser.error("--owned-gl-binary requires --software-gl for isolated Mesa checks")
+    if args.owned_gl_api != "gles" and not args.owned_gl_binary:
+        parser.error("--owned-gl-api requires --owned-gl-binary")
     binary = args.binary.resolve(strict=True)
     owned_gl = args.owned_gl_binary.resolve(strict=True) if args.owned_gl_binary else None
     results = []
@@ -73,7 +44,8 @@ def main():
                           "GST_GL_API": "gles2", "EGL_PLATFORM": "surfaceless",
                           "LIBGL_ALWAYS_SOFTWARE": "1", "__EGL_VENDOR_LIBRARY_FILENAMES": str(mesa)}))
             if owned_gl:
-                modes.append(("owned-gl", modes[-1][1]))
+                modes.append(("owned-gl", dict(modes[-1][1], GST_GL_API=(
+                    "opengl3" if args.owned_gl_api == "desktop" else "gles2"))))
         for matrix in ["bt709", "smpte170m"]:
             for full_range in [False, True]:
                 label = f"{matrix}-{'full' if full_range else 'limited'}"
@@ -97,7 +69,7 @@ def main():
                 assert decoded == original_yuv(colors), label
                 for mode, extra in modes:
                     capture = directory / f"{label}-{mode}.png"
-                    command = ([str(owned_gl), str(video)] if mode == "owned-gl" else
+                    command = ([str(owned_gl), str(video), "--gl-api", args.owned_gl_api] if mode == "owned-gl" else
                                [str(binary), str(video), "--mode", mode, "--seconds", "1", "--warmup", "0"])
                     run = subprocess.run([*command, "--first-frame", str(capture)],
                                          env=dict(env, **extra), capture_output=True, text=True, timeout=25)
@@ -107,11 +79,14 @@ def main():
                     assert report["first_frame_capture"]["bytes"] == WIDTH * HEIGHT * 4, report
                     assert any(item["factory"] == "vp9dec" for item in report["decoders"]), report
                     if mode == "owned-gl":
+                        assert report["gl_api"] == args.owned_gl_api, report
                         assert report["scope"] == "single_shared_texture_draw_into_owned_fbo", report
                         assert report["consumer_cpu_buffer_maps"] == 0 and report["snapshot_readbacks"] == 1, report
                         assert report["input_memory"]["shared_context"] and report["input_memory"]["producer_sync_meta"], report
                         assert report["input_memory"]["allocator_type"].startswith("GstGLMemory"), report
                         assert "llvmpipe" in report["gl"]["renderer"].lower(), report
+                        actual = next(item for item in report["decoders"] if item["factory"] == "vp9dec")["first_actual_buffer"]
+                        assert actual["memories"] > 0 and not actual["all_memory_is_gl"] and actual["allocator_types"], report
                     # This exact CI runtime selects its limited BT.601 coefficients
                     # for full-range input. Check that known behavior independently;
                     # never count it as color conformance or relax the reference limit.
@@ -152,7 +127,7 @@ def main():
             extra = modes[-1][1]
 
             def reject(path, output, environment):
-                failed = subprocess.run([str(owned_gl), str(path), "--first-frame", str(output)],
+                failed = subprocess.run([str(owned_gl), str(path), "--gl-api", args.owned_gl_api, "--first-frame", str(output)],
                                         env=environment, capture_output=True, text=True, timeout=25)
                 assert failed.returncode != 0 and not failed.stdout.strip(), failed
                 return failed

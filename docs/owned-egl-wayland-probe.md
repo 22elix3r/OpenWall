@@ -19,7 +19,7 @@ do not set it to point this diagnostic at a desktop session.
 ## Surface and context ownership
 
 Rust owns the `wl_surface`, its overlay layer-shell role, `wl_egl_window`, EGL window
-surface and GLES 3 context. It acknowledges the role's configure before the first EGL
+surface and GL context (GLES 3 by default, desktop core OpenGL 3.3 with `--gl-api desktop`). It acknowledges the role's configure before the first EGL
 attachment and validates dimensions before allocation. The native window is created
 through the public [wayland-egl API](https://docs.rs/wayland-egl/0.32.11/wayland_egl/struct.WlEglSurface.html).
 The EGL display comes from the same live Wayland connection. No opaque GStreamer window
@@ -60,6 +60,13 @@ Ubuntu releases; default/macOS builds
 compile an unavailable-platform fallback. This does not qualify physical hotplug,
 hardware drivers, native-resolution fractional rendering, GNOME/Plasma roles or macOS.
 The test overlay and input witness are not product UI or a production wallpaper role.
+This single-output diagnostic owns one EGL display/context. A multi-output presenter
+must share display ownership and destroy it only after all native surfaces and GL
+consumers have stopped; independent guards must not terminate a shared display.
+
+Both API profiles run through the native input/lifecycle suite. The separate
+[desktop GL interop checks](desktop-gl-video-interop.md) explain why decoder compatibility
+must also be qualified before selecting a production video context API.
 
 The next gate combines this owned surface with the shared video texture consumer and
 its bounded producer/consumer synchronization. Frame readiness must then be tied to the
