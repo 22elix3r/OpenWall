@@ -3,7 +3,7 @@ use super::gl_api::Api;
 use anyhow::{Context, Result, ensure};
 use glow::HasContext;
 use khronos_egl as egl;
-use std::{marker::PhantomData, rc::Rc};
+use std::{cell::Cell, marker::PhantomData, rc::Rc};
 use wayland_client::{Connection, Proxy, protocol::wl_surface::WlSurface};
 
 pub struct Window {
@@ -13,7 +13,7 @@ pub struct Window {
     surface: Option<egl::Surface>,
     window: Option<wayland_egl::WlEglSurface>,
     gl: Option<glow::Context>,
-    size: (u32, u32),
+    size: Cell<(u32, u32)>,
     selected: Api,
     // The connection and wl_surface outlive the native EGL wrappers. The caller
     // must also keep the protocol object undestroyed until this guard is dropped.
@@ -52,7 +52,7 @@ impl Window {
             surface: None,
             window: None,
             gl: None,
-            size: (width, height),
+            size: Cell::new((width, height)),
             selected,
             _connection: connection.clone(),
             _surface: surface.clone(),
@@ -122,14 +122,7 @@ impl Window {
     }
 
     pub fn draw(&mut self, width: u32, height: u32) -> Result<()> {
-        validate_size(width, height)?;
-        if self.size != (width, height) {
-            self.window
-                .as_ref()
-                .context("native window missing")?
-                .resize(width as i32, height as i32, 0, 0);
-            self.size = (width, height);
-        }
+        self.resize(width, height)?;
         let gl = self.gl.as_ref().context("GL context missing")?;
         // SAFETY: only this thread uses the current context; dimensions are bounded.
         unsafe {
@@ -159,13 +152,39 @@ impl Window {
                 "owned Wayland GL draw failed"
             );
         }
+        self.present()
+    }
+
+    pub fn resize(&self, width: u32, height: u32) -> Result<()> {
+        validate_size(width, height)?;
+        if self.size.get() != (width, height) {
+            self.window
+                .as_ref()
+                .context("native window missing")?
+                .resize(width as i32, height as i32, 0, 0);
+            self.size.set((width, height));
+        }
+        Ok(())
+    }
+
+    pub fn present(&self) -> Result<()> {
         self.api
             .swap_buffers(self.display, self.surface.context("EGL surface missing")?)?;
         Ok(())
     }
 
+    pub fn gl(&self) -> Result<&glow::Context> {
+        self.gl.as_ref().context("GL context missing")
+    }
+
+    // Used by the video diagnostic; the static-surface entry point needs no Gst context.
+    #[allow(dead_code)]
+    pub fn handles(&self) -> Result<(egl::Display, egl::Context)> {
+        Ok((self.display, self.context.context("EGL context missing")?))
+    }
+
     pub fn report(&self) -> Result<serde_json::Value> {
-        let gl = self.gl.as_ref().context("GL context missing")?;
+        let gl = self.gl()?;
         // SAFETY: context remains current on this thread.
         Ok(unsafe {
             serde_json::json!({"api":self.selected.name(),"vendor":gl.get_parameter_string(glow::VENDOR),

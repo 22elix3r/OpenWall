@@ -48,6 +48,7 @@ pub(super) struct State {
     pub dirty: bool,
     pub pending_feedback: bool,
     pub presented: u32,
+    pub presented_frame_ids: Vec<u64>,
     pub discarded: u32,
     pub injected: bool,
     pub witness_buttons: u32,
@@ -144,13 +145,17 @@ pub(super) fn connect(
 
 impl State {
     pub fn request_feedback(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
+        self.request_frame_feedback(qh, 0)
+    }
+
+    pub fn request_frame_feedback(&mut self, qh: &QueueHandle<Self>, frame_id: u64) -> Result<()> {
         self.presentation
             .as_ref()
             .context("presentation feedback missing")?
             .feedback(
                 self.surface.as_ref().context("EGL surface missing")?,
                 qh,
-                (),
+                frame_id,
             );
         self.pending_feedback = true;
         Ok(())
@@ -415,18 +420,22 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
     }
 }
 
-impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, ()> for State {
+impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, u64> for State {
     fn event(
         state: &mut Self,
         _: &wp_presentation_feedback::WpPresentationFeedback,
         event: wp_presentation_feedback::Event,
-        _: &(),
+        frame_id: &u64,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         match event {
             wp_presentation_feedback::Event::Presented { .. } => {
                 state.presented += 1;
+                // Diagnostic histories stay bounded even for a high-rate source.
+                if state.presented_frame_ids.len() < 256 {
+                    state.presented_frame_ids.push(*frame_id);
+                }
                 state.pending_feedback = false;
             }
             wp_presentation_feedback::Event::Discarded => {
