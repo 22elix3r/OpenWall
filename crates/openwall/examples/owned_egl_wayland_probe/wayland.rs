@@ -70,11 +70,12 @@ pub(super) struct SecondarySurface {
     pub dirty: bool,
     pub pending_feedback: bool,
     pub presented: u32,
+    pub presented_frame_ids: Vec<u64>,
     pub discarded: u32,
     pub closed: bool,
 }
 
-pub(super) struct Secondary;
+pub(super) struct Secondary(pub u64);
 
 impl Drop for SecondarySurface {
     fn drop(&mut self) {
@@ -171,6 +172,18 @@ pub(super) fn connect(
 }
 
 impl State {
+    #[allow(dead_code)] // Caller first destroys its primary native EGL window.
+    pub fn retire_primary(&mut self) {
+        if let Some(layer) = self.layer.take() {
+            layer.destroy();
+        }
+        if let Some(surface) = self.surface.take() {
+            surface.destroy();
+        }
+        self.configured = None;
+        self.dirty = false;
+        self.pending_feedback = false;
+    }
     #[allow(dead_code)] // Explicit staged-child mode; normal probes keep their root.
     pub fn enable_staging(&mut self, qh: &QueueHandle<Self>, intercept: bool) -> Result<()> {
         ensure!(self.child.is_none(), "staged native child already exists");
@@ -289,7 +302,7 @@ impl State {
                 zwlr_layer_shell_v1::Layer::Overlay,
                 "openwall-private-egl-secondary".into(),
                 qh,
-                Secondary,
+                Secondary(0),
             );
         layer.set_size(0, 0);
         layer.set_anchor(
@@ -308,6 +321,7 @@ impl State {
             dirty: true,
             pending_feedback: false,
             presented: 0,
+            presented_frame_ids: Vec::new(),
             discarded: 0,
             closed: false,
         });
@@ -316,6 +330,11 @@ impl State {
 
     #[allow(dead_code)] // Only the shared-session diagnostic creates a second root.
     pub fn secondary_feedback(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
+        self.secondary_frame_feedback(qh, 0)
+    }
+
+    #[allow(dead_code)] // Shared video labels each output's buffer independently.
+    pub fn secondary_frame_feedback(&mut self, qh: &QueueHandle<Self>, id: u64) -> Result<()> {
         let secondary = self
             .secondary
             .as_mut()
@@ -323,7 +342,7 @@ impl State {
         self.presentation
             .as_ref()
             .context("presentation missing")?
-            .feedback(&secondary.surface, qh, Secondary);
+            .feedback(&secondary.surface, qh, Secondary(id));
         secondary.pending_feedback = true;
         Ok(())
     }
@@ -451,7 +470,7 @@ impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, Secondary> for S
         state: &mut Self,
         _: &wp_presentation_feedback::WpPresentationFeedback,
         event: wp_presentation_feedback::Event,
-        _: &Secondary,
+        id: &Secondary,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -459,6 +478,9 @@ impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, Secondary> for S
             match event {
                 wp_presentation_feedback::Event::Presented { .. } => {
                     secondary.presented += 1;
+                    if secondary.presented_frame_ids.len() < 256 {
+                        secondary.presented_frame_ids.push(id.0);
+                    }
                     secondary.pending_feedback = false;
                 }
                 wp_presentation_feedback::Event::Discarded => {

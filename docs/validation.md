@@ -195,6 +195,12 @@ buffer and start the same pipeline. Private Mesa/NVIDIA tests verify animated pi
 presentation, GPU lease retirement and paused cancellation; general worker apply and
 resizing published content still require qualification.
 
+The [shared video output diagnostic](shared-video-outputs-probe.md) checks one decoder,
+one current source sample and per-output presentation/fences on two native windows. It
+requires moving video and a new playback loop on the survivor after the first native
+surface is destroyed, while the shared display/context remain alive. This does not yet
+replace production's per-output decoders or qualify general display management.
+
 - Real macOS video/scene desktop placement, Spaces, Mission Control, Stage Manager,
   Finder icons, fullscreen behavior and native app activation.
 - Multiple monitors, fractional/mixed scaling, output rotations, mixed refresh,

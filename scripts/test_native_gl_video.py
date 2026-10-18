@@ -22,6 +22,45 @@ ROOT = Path(__file__).resolve().parents[1]
 FRAMES, FPS = 12, 2
 
 
+def fixture(directory, nvidia):
+    colors = []
+    base = patches(False)
+    for index in range(FRAMES):
+        frame = base[index % len(base):] + base[:index % len(base)]
+        frame[0] = (16 + 8 * index, 128, 128)
+        colors.append(frame)
+    scale = 2 if nvidia else 1
+    raw_bytes = b"".join((enlarged_yuv if nvidia else original_yuv)(frame) for frame in colors)
+    raw = directory / "original.yuv"
+    raw.write_bytes(raw_bytes)
+    video = directory / "original ! name='native'.webm"
+    tags = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pixel_format", "yuv420p",
+                    "-video_size", f"{WIDTH * scale}x{HEIGHT * scale}", "-framerate", str(FPS), *tags, "-i", str(raw),
+                    "-frames:v", str(FRAMES), "-an", "-c:v", "libvpx-vp9", "-lossless", "1", *tags, str(video)],
+                   check=True, capture_output=True, timeout=30)
+    decoded = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(video),
+                              "-f", "rawvideo", "-pix_fmt", "yuv420p", *tags, "pipe:1"],
+                             check=True, capture_output=True, timeout=30).stdout
+    assert decoded == raw_bytes, "encoder changed original YUV samples"
+    return video, colors, scale
+
+
+def identify_pixels(image, colors):
+    errors = []
+    for frame in colors:
+        maximum = 0
+        for index, yuv in enumerate(frame):
+            expected = expected_rgba(yuv, "bt709", False)[:3]
+            for dx, dy in [(-.02, -.04), (0, 0), (.02, .04)]:
+                point = (int(image.width * ((index % 5 + .5) / 5 + dx)),
+                         int(image.height * ((index // 5 + .5) / 2 + dy)))
+                maximum = max(maximum, max(abs(a - b) for a, b in zip(image.getpixel(point), expected)))
+        errors.append(maximum)
+    error = min(errors)
+    return errors.index(error), error
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/examples/native_gl_video_probe")
@@ -53,26 +92,7 @@ def main():
     assert rejected.returncode != 0 and "OPENWALL_PRIVATE_COMPOSITOR=1" in rejected.stderr, rejected
     with tempfile.TemporaryDirectory(prefix="openwall-native-video-") as temporary:
         directory = Path(temporary)
-        colors = []
-        base = patches(False)
-        for index in range(FRAMES):
-            frame = base[index % len(base):] + base[:index % len(base)]
-            frame[0] = (16 + 8 * index, 128, 128)
-            colors.append(frame)
-        scale = 2 if args.nvidia else 1
-        raw_bytes = b"".join((enlarged_yuv if args.nvidia else original_yuv)(frame) for frame in colors)
-        raw = directory / "original.yuv"
-        raw.write_bytes(raw_bytes)
-        video = directory / "original ! name='native'.webm"
-        tags = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
-        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pixel_format", "yuv420p",
-                        "-video_size", f"{WIDTH * scale}x{HEIGHT * scale}", "-framerate", str(FPS), *tags, "-i", str(raw),
-                        "-frames:v", str(FRAMES), "-an", "-c:v", "libvpx-vp9", "-lossless", "1", *tags, str(video)],
-                       check=True, capture_output=True, timeout=30)
-        decoded = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(video),
-                                  "-f", "rawvideo", "-pix_fmt", "yuv420p", *tags, "pipe:1"],
-                                 check=True, capture_output=True, timeout=30).stdout
-        assert decoded == raw_bytes, "encoder changed original YUV samples"
+        video, colors, scale = fixture(directory, args.nvidia)
         session_dir = directory / "session"
         session_dir.mkdir()
         session = Session(session_dir, sway, software_vulkan=False, renderer_env=render_env)
@@ -141,19 +161,9 @@ def main():
                 if child.poll() is not None or "Native GL video removing private surfaces" in session.text(log):
                     return None
                 assert image is not None
-                errors = []
-                for frame in colors:
-                    maximum = 0
-                    for index, yuv in enumerate(frame):
-                        expected = expected_rgba(yuv, "bt709", False)[:3]
-                        for dx, dy in [(-.02, -.04), (0, 0), (.02, .04)]:
-                            point = (int(image.width * ((index % 5 + .5) / 5 + dx)),
-                                     int(image.height * ((index // 5 + .5) / 2 + dy)))
-                            maximum = max(maximum, max(abs(a - b) for a, b in zip(image.getpixel(point), expected)))
-                    errors.append(maximum)
-                error = min(errors)
-                assert error <= 3, ("compositor pixels do not match any original frame", errors, session.diagnostics())
-                return errors.index(error), error
+                identity, error = identify_pixels(image, colors)
+                assert error <= 3, ("compositor pixels do not match any original frame", error, session.diagnostics())
+                return identity, error
 
             child, log = spawn()
             idle_cpu = None
