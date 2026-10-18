@@ -22,7 +22,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld pkg-config libwayland-dev libxkbcommon-dev libvulkan1 mesa-vulkan-drivers libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad sway grim ffmpeg python3-pil qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-wayland qml-qt6 qml6-module-qtwayland-compositor qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-templates qml6-module-qtqml-workerscript
+          sudo apt-get install -y clang lld pkg-config libwayland-dev libxkbcommon-dev libvulkan1 mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-gl sway grim ffmpeg python3-pil qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-wayland qml-qt6 qml6-module-qtwayland-compositor qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-templates qml6-module-qtqml-workerscript
       - name: macOS desktop dependencies
         if: runner.os == 'macOS'
         run: |
@@ -42,7 +42,7 @@ jobs:
       - run: cargo fmt --all --check
       - name: Integration probe syntax
         run: |
-          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py
+          python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/test_video_transfer_probe.py
           node --input-type=module --check < integrations/gnome/presentation.js
       - name: Measurement harness process tests
         run: python3 -m unittest discover -s scripts/tests -v
@@ -62,6 +62,11 @@ jobs:
       - name: External-process Plasma presentation bridge
         if: runner.os == 'Linux'
         run: /usr/bin/python3 scripts/test_plasma_bridge.py --video-fixture /tmp/openwall-loop.webm
+      - name: Windowless video transfer probe
+        if: runner.os == 'Linux'
+        run: |
+          cargo build -p openwall --example video_transfer_probe --locked
+          /usr/bin/python3 scripts/test_video_transfer_probe.py --software-gl --video-fixture /tmp/openwall-loop.webm
       - name: GUI startup
         env:
           QT_QPA_PLATFORM: offscreen
