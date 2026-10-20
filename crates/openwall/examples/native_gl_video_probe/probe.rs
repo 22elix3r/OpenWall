@@ -9,6 +9,8 @@ mod gl_api;
 #[path = "../probe_support/gl_painter.rs"]
 mod gl_painter;
 mod media;
+#[path = "../probe_support/native_measurement.rs"]
+mod native_measurement;
 #[path = "../probe_support/native_media_context.rs"]
 mod native_media_context;
 #[path = "../probe_support/publish_control.rs"]
@@ -46,9 +48,9 @@ struct Args {
     video: PathBuf,
     #[arg(long)]
     output: String,
-    #[arg(long, default_value_t=2, value_parser=clap::value_parser!(u8).range(1..=3))]
+    #[arg(long, conflicts_with="measure_seconds", default_value_t=2, value_parser=clap::value_parser!(u8).range(1..=3))]
     loops: u8,
-    #[arg(long, default_value_t=30, value_parser=clap::value_parser!(u64).range(1..=30))]
+    #[arg(long, conflicts_with="measure_seconds", default_value_t=30, value_parser=clap::value_parser!(u64).range(1..=30))]
     seconds: u64,
     #[arg(long, value_enum, default_value_t=gl_api::Api::Desktop)]
     gl_api: gl_api::Api,
@@ -57,6 +59,11 @@ struct Args {
     /// Private harness gate: preroll paused, then publish on one exact command.
     #[arg(long)]
     staged_control: Option<PathBuf>,
+    /// Aggregate a sustained private run instead of retaining every frame record.
+    #[arg(long, conflicts_with_all=["staged_control", "intercept_input"], value_parser=clap::value_parser!(u64).range(1..=120))]
+    measure_seconds: Option<u64>,
+    #[arg(long, requires="measure_seconds", default_value_t=5, value_parser=clap::value_parser!(u64).range(0..=30))]
+    warmup_seconds: u64,
 }
 
 pub fn run() -> Result<()> {
@@ -132,9 +139,10 @@ pub fn run() -> Result<()> {
     let mut leases = VecDeque::new();
     let mut current = None;
     let mut records = Vec::new();
+    let mut submitted = 0u64;
     let mut retired = 0;
     let mut peak = 0;
-    let mut completed_loops = 0;
+    let mut completed_loops = 0u64;
     let mut first_memory = None;
     let mut source_size = None;
     let mut clicks = 0;
@@ -145,7 +153,12 @@ pub fn run() -> Result<()> {
     let mut published_size = None;
     let mut staged_ready = false;
     let mut publication_deadline = None;
-    let deadline = Instant::now() + Duration::from_secs(args.seconds);
+    let mut measurement = native_measurement::Run::new(args.measure_seconds, args.warmup_seconds);
+    let duration = args
+        .measure_seconds
+        .map(|seconds| seconds + args.warmup_seconds + 15)
+        .unwrap_or(args.seconds);
+    let deadline = Instant::now() + Duration::from_secs(duration);
     loop {
         queue.dispatch_pending(&mut state)?;
         let mut bytes = [0; 64];
@@ -210,6 +223,22 @@ pub fn run() -> Result<()> {
             ready = true;
             eprintln!("Native GL video presented; pointer reached underlying witness");
         }
+        if args.measure_seconds.is_some() {
+            let (received, replaced) = media.counters()?;
+            if measurement.tick(
+                ready,
+                native_measurement::Counters {
+                    submissions: submitted,
+                    presentation_feedbacks: u64::from(state.presented),
+                    discarded_feedbacks: u64::from(state.discarded),
+                    received_samples: received,
+                    replaced_samples: replaced,
+                    loops: completed_loops,
+                },
+            )? {
+                break;
+            }
+        }
         if stopped.load(Ordering::Relaxed) {
             break;
         }
@@ -235,7 +264,7 @@ pub fn run() -> Result<()> {
                 && let Some(sample) = current.as_ref()
             {
                 ensure!(
-                    records.len() < 240,
+                    args.measure_seconds.is_some() || records.len() < 240,
                     "native video diagnostic frame limit exceeded"
                 );
                 let source = shared_gl::source(sample, &sharing.wrapped, gl)?;
@@ -262,7 +291,7 @@ pub fn run() -> Result<()> {
                 };
                 painter.draw(&source, None, [0, 0, width, height])?;
                 lease.seal()?;
-                let id = records.len() as u64 + 1;
+                let id = submitted + 1;
                 if publish_this {
                     state.request_frame_feedback(&queue.handle(), id)?;
                 }
@@ -289,11 +318,14 @@ pub fn run() -> Result<()> {
                         }
                     }
                 }
-                records.push(
+                if args.measure_seconds.is_none() || records.len() < 32 {
+                    records.push(
                     serde_json::json!({"id":id,"pts_ns":source.pts_ns,"loop":completed_loops,
                     "logical_size":[width,height],"texture_id":source.texture.0.get(),
                     "geometry_refresh_required":geometry_refresh_required,"published":publish_this}),
                 );
+                }
+                submitted += 1;
                 leases.push_back(lease);
                 peak = peak.max(leases.len());
                 state.dirty = geometry_refresh_required;
@@ -311,7 +343,7 @@ pub fn run() -> Result<()> {
             current.take();
             if leases.is_empty() {
                 completed_loops += 1;
-                if completed_loops == args.loops {
+                if args.measure_seconds.is_none() && completed_loops == u64::from(args.loops) {
                     break;
                 }
                 media.rewind()?;
@@ -335,6 +367,9 @@ pub fn run() -> Result<()> {
         }
         if !leases.is_empty() {
             next = next.min(Instant::now() + Duration::from_millis(1));
+        }
+        if let Some(until) = measurement.next_deadline() {
+            next = next.min(until);
         }
         if let Some(control) = &control {
             wayland_poll::wait_fds(
@@ -362,12 +397,13 @@ pub fn run() -> Result<()> {
         "gl":window.report()?,"gstreamer":gst::version_string().to_string(),"egl_context_creations":1,
         "input_region":"empty","witness_button_events":clicks,"frames":records,"presented_frame_ids":state.presented_frame_ids,
         "presented":state.presented,"discarded":state.discarded,"completed_loops":completed_loops,
+        "measurement":measurement.result()?,"submitted_frames":submitted,"retained_frame_records":records.len(),
         "interrupted":stopped.load(Ordering::Relaxed),"source_size":source_size,"input_memory":first_memory,
         "staging":{"enabled":staging,"prepared":staged_ready,"published":published,"playback_started":playback_started},
         "consumer_cpu_buffer_maps":0,"consumer_readbacks":0,"consumer_offscreen_targets":0,
         "decoders":media.decoders()?,"decoder_buffers":media.decoder_buffers()?,
         "delivery":{"received":received,"replaced":replaced,"latest_slot_limit":1},
-        "consumer_fences":{"submitted":records.len(),"retired":retired,"peak_in_flight":peak,"limit":3,"cleanup_finish_calls":finishes.get()}});
+        "consumer_fences":{"submitted":submitted,"retired":retired,"peak_in_flight":peak,"limit":3,"cleanup_finish_calls":finishes.get()}});
     eprintln!("Native GL video removing private surfaces");
     drop(leases);
     drop(media);
