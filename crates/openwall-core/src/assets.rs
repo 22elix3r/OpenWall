@@ -182,6 +182,14 @@ impl Assets {
         limits.max_image_width = Some(8192);
         limits.max_image_height = Some(8192);
         limits.max_alloc = Some(MAX_ASSET_BYTES);
+        reader.limits(limits.clone());
+        let (width, height) = reader.into_dimensions()?;
+        ensure!(
+            u64::from(width) * u64::from(height) * 4 <= MAX_ASSET_BYTES,
+            "decoded image exceeds RGBA memory limit: {name}"
+        );
+        let mut reader =
+            image::ImageReader::new(std::io::Cursor::new(&*bytes)).with_guessed_format()?;
         reader.limits(limits);
         reader
             .decode()

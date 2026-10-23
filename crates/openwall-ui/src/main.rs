@@ -2,6 +2,7 @@
 mod backend;
 mod outputs;
 mod query;
+mod thumbnail;
 mod worker;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 

@@ -30,6 +30,12 @@ enum Command {
     Outputs,
     /// Inspect the supported scene subset without executing wallpaper code.
     Inspect { path: PathBuf },
+    /// Generate a bounded static PNG thumbnail without a window or GPU.
+    Thumbnail {
+        path: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
     /// Render a scene to PNG without creating a desktop window.
     Render {
         path: PathBuf,
@@ -129,6 +135,16 @@ fn execute() -> Result<()> {
                 report["schema_version"] = openwall_core::inspection::SCHEMA_VERSION.into();
                 println!("{}", serde_json::to_string_pretty(&report)?);
             }
+        }
+        Command::Thumbnail { path, output } => {
+            use std::io::Write;
+            let bytes = openwall_core::thumbnail::png(path)?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)
+                .with_context(|| format!("cannot create thumbnail: {}", output.display()))?
+                .write_all(&bytes)?;
         }
         Command::Render {
             path,

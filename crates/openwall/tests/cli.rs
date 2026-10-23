@@ -179,3 +179,36 @@ fn gpu_applies_position_rotation_and_linear_alpha_blending() {
     );
     assert_eq!([color[1], color[2], color[3]], [0, 0, 255]);
 }
+
+#[test]
+fn thumbnail_is_windowless_bounded_and_never_overwrites_existing_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("preview.png");
+    let invoke = || {
+        Command::new(env!("CARGO_BIN_EXE_openwall"))
+            .arg("thumbnail")
+            .arg(sample("aurora"))
+            .arg("--output")
+            .arg(&output)
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("WAYLAND_SOCKET")
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            .output()
+            .unwrap()
+    };
+    let result = invoke();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(result.stdout.is_empty());
+    let bytes = std::fs::read(&output).unwrap();
+    assert!(bytes.len() <= openwall_core::thumbnail::MAX_PNG_BYTES);
+    let png = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).unwrap();
+    assert!(png.width() <= 512 && png.height() <= 512);
+    let second = invoke();
+    assert!(!second.status.success(), "existing file was overwritten");
+    assert_eq!(std::fs::read(output).unwrap(), bytes);
+}
