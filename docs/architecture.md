@@ -95,6 +95,10 @@ retained. These are integration requirements, not implemented IPC/manager behavi
 The [two-source diagnostic](video-replacement-probe.md) currently establishes explicit
 publication/rollback and pre-publication media failure handling in one process, with
 injected post-publication media-error rollback and explicit finalization retirement.
+The reusable presentation-feedback tracker also separates locally cancelled readiness
+from a compositor's eventual terminal event, so a failed candidate's late feedback
+cannot complete a restoration wait. The candidate clock stays paused when its error
+is observed before readiness is accepted.
 Real decoder/presentation/control failure recovery and repeated assignments remain open. A process crash still
 loses that worker's sources; the manager needs bounded restart/backoff and a trusted
 static/previous fallback after its restart budget is exhausted. Combine

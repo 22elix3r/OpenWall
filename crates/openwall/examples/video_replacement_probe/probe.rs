@@ -55,6 +55,9 @@ struct Args {
     /// Post an explicit diagnostic GStreamer error after confirmed candidate readiness.
     #[arg(long, value_parser=clap::value_parser!(u64).range(500..=2000))]
     fail_candidate_after_ms: Option<u64>,
+    /// Inject before accepting candidate feedback; its media clock must never start.
+    #[arg(long, conflicts_with = "fail_candidate_after_ms")]
+    fail_before_candidate_confirmation: bool,
 }
 
 struct Source {
@@ -200,6 +203,9 @@ pub fn run() -> Result<()> {
     let mut fault_injected = false;
     let mut auto_rollback = false;
     let mut candidate_first_confirmed = false;
+    let mut candidate_publication_id = None;
+    let mut early_cancel_requested = false;
+    let mut early_cancel_applied = false;
     let mut restored_button_goal = 6;
     let mut clock_starts = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(args.seconds);
@@ -248,6 +254,19 @@ pub fn run() -> Result<()> {
                 "finalized source failed after previous-source retirement: {error}"
             );
             candidate_failure = Some(error.to_string());
+        }
+        if candidate_failure.is_some() && phase == Phase::Publishing {
+            let id = transition
+                .take()
+                .context("failed publication feedback missing")?;
+            early_cancel_applied = state.cancel_frame_feedback(id);
+            early_cancel_requested = true;
+            command_pending = Some(Command::Rollback);
+            auto_rollback = true;
+            phase = Phase::Candidate;
+            eprintln!(
+                "Replacement candidate readiness cancelled; restoring retained previous video"
+            );
         }
         while shared_gl::retire_one(&mut leases, false, &AtomicBool::new(false))? {
             retired += 1;
@@ -560,6 +579,17 @@ pub fn run() -> Result<()> {
                 }
                 tree.show(index)?;
                 transition = Some(id);
+                if kind == "publish" {
+                    candidate_publication_id = Some(id);
+                    if args.fail_before_candidate_confirmation {
+                        sources[1]
+                            .as_ref()
+                            .context("candidate fault source missing")?
+                            .media
+                            .diagnostic_error()?;
+                        fault_injected = true;
+                    }
+                }
                 command_pending = None;
                 validation_deadline = Some(Instant::now() + Duration::from_secs(5));
             } else {
@@ -653,7 +683,11 @@ pub fn run() -> Result<()> {
         "removed_candidate_lifecycle":removal_counts,"frames":records,"presented_frame_ids":state.presented_frame_ids,
         "finalized":phase==Phase::Finalized,"retired_previous_lifecycle":finalization_counts,
         "finalization_frame_id":finalization_frame_id,
-        "fault_injected":fault_injected,"automatic_rollback":auto_rollback,"candidate_first_frame_confirmed":candidate_first_confirmed,
+        "fault_injected":fault_injected,"automatic_rollback":auto_rollback,
+        "candidate_first_frame_confirmed":candidate_publication_id.is_some_and(|id|state.presented_frame_ids.contains(&id)),
+        "candidate_readiness_accepted":candidate_first_confirmed,"candidate_publication_id":candidate_publication_id,
+        "early_cancel_requested":early_cancel_requested,"early_cancel_applied":early_cancel_applied,
+        "presentation_feedback":state.feedback_tracker.snapshot(),
         "clock_starts":clock_starts,"witness_button_events":state.witness_buttons,
         "consumer_cpu_buffer_maps":0,"consumer_readbacks":0,"consumer_offscreen_targets":0,
         "consumer_fences":{"submitted":records.len(),"retired":retired,"peak_in_flight":peak,
