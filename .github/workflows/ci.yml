@@ -23,9 +23,9 @@ jobs:
         timeout-minutes: 10
         run: |
           # Keep Ubuntu's signed archive/keyring; avoid the slow Azure HTTP mirror.
-          for openwall_apt_source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+          for openwall_apt_source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources /etc/apt/apt-mirrors*.txt; do
             if [ -f "$openwall_apt_source" ]; then
-              sudo sed -i -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$openwall_apt_source"
+              sudo sed -i -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' "$openwall_apt_source"
             fi
           done
           openwall_apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=60)
@@ -73,6 +73,25 @@ jobs:
             target
           key: ${{ matrix.os }}-rust-v2-${{ hashFiles('Cargo.lock') }}
       - run: cargo test --workspace --locked
+      - name: Read-only macOS display enumeration
+        if: runner.os == 'macOS'
+        run: |
+          python3 - <<'PY'
+          import json, math, subprocess
+          result = subprocess.run(["target/debug/openwall", "outputs"], capture_output=True, text=True, check=True, timeout=10)
+          report = json.loads(result.stdout)
+          assert report["backend"] == "appkit" and report["hardware_qualification"] == "pending", report
+          displays = report["outputs"]
+          assert isinstance(displays, list), report
+          selectors = [item["selector"] for item in displays]
+          assert len(set(selectors)) == len(selectors), report
+          for item in displays:
+              assert item["selector"].startswith("macos:") and item["selector"][6:].isdigit(), item
+              assert item["width"] > 0 and item["height"] > 0 and math.isfinite(item["scale"]) and item["scale"] > 0, item
+              assert item["name"] and item["label"] and isinstance(item["x"], int) and isinstance(item["y"], int), item
+          assert sum(bool(item["primary"]) for item in displays) <= 1, report
+          print(json.dumps({"macos_display_enumeration":"passed", "display_count":len(displays)}))
+          PY
       - name: App-local GStreamer 1.28 Wayland helper
         if: matrix.os == 'ubuntu-26.04'
         run: |
