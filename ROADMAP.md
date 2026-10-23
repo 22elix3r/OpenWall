@@ -41,6 +41,11 @@ GL/GLES and NVIDIA desktop GL tests cover presentation-gated clocks, retained-fr
 rollback, failed/cancelled candidate readiness, real candidate-discard recovery and
 explicit old-source retirement after finalization. A discarded restoration remains a
 failure. These are qualified building blocks for a persistent worker, not production
-Apply or a durable manager. Repeated transactions, versioned control/disconnection
-recovery, persistence, independent pause reasons and worker restart/fallback remain M1
-work; lost feedback and actual decoder/driver crashes still need recovery evidence.
+Apply or a durable manager. Subsequent private conformance covers recreation/retirement
+of the next hidden candidate, same-user inherited-controller loss, exact presentation
+receipts independent of bounded diagnostic histories and combined user/power pause
+reasons. Paused publication/restoration can retain static frames without starting a
+media clock; clearing one reason cannot clear another. These remain diagnostic controls.
+Repeated transactions, production versioned control/authentication, durable assignments,
+real platform policy producers and worker restart/fallback remain M1 work; lost feedback
+and actual decoder/driver crashes still need recovery evidence.

@@ -10,6 +10,10 @@ use std::{
 };
 
 pub enum Command {
+    SetPause {
+        reason: openwall::playback::PauseReason,
+        paused: bool,
+    },
     Publish,
     Rollback,
     Abort,
@@ -67,6 +71,10 @@ impl Control {
             let _ = socket.shutdown(std::net::Shutdown::Both);
         }
     }
+    #[allow(dead_code)] // Stream video control must drain coalesced commands before polling.
+    pub fn has_buffered_command(&self) -> bool {
+        !self.closed && self.buffered.contains(&b'\n')
+    }
     pub fn next(&mut self) -> Result<Option<Command>> {
         let mut message = [0; 32];
         if self.closed {
@@ -109,7 +117,24 @@ impl Control {
         }
     }
     fn parse(message: &[u8]) -> Result<Command> {
+        use openwall::playback::PauseReason;
         match message {
+            b"pause user\n" => Ok(Command::SetPause {
+                reason: PauseReason::User,
+                paused: true,
+            }),
+            b"resume user\n" => Ok(Command::SetPause {
+                reason: PauseReason::User,
+                paused: false,
+            }),
+            b"pause power\n" => Ok(Command::SetPause {
+                reason: PauseReason::PowerPolicy,
+                paused: true,
+            }),
+            b"resume power\n" => Ok(Command::SetPause {
+                reason: PauseReason::PowerPolicy,
+                paused: false,
+            }),
             b"publish\n" => Ok(Command::Publish),
             b"rollback\n" => Ok(Command::Rollback),
             b"abort\n" => Ok(Command::Abort),

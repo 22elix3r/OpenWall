@@ -5,6 +5,7 @@ mod control;
 mod decoder_trace;
 use openwall::native_egl::gl_api;
 use openwall::native_egl::window as egl_window;
+use openwall::playback::Pauses;
 use openwall::presentation::feedback::{Completion, Receipt};
 #[path = "../probe_support/gl_painter.rs"]
 mod gl_painter;
@@ -89,6 +90,8 @@ struct Source {
     dirty: bool,
     prepared: bool,
     started: bool,
+    playing: bool,
+    presented_id: Option<u64>,
     loops: u32,
 }
 impl Source {
@@ -101,6 +104,8 @@ impl Source {
             dirty: false,
             prepared: false,
             started: false,
+            playing: false,
+            presented_id: None,
             loops: 0,
         }
     }
@@ -110,7 +115,7 @@ impl Source {
             serde_json::json!({"input_memory":self.memory,"source_size":self.size,
             "decoders":self.media.decoders()?,"decoder_buffers":self.media.decoder_buffers()?,
             "delivery":{"received":received,"replaced":replaced,"latest_slot_limit":1},
-            "prepared":self.prepared,"playback_started":self.started,"completed_loops":self.loops}),
+            "prepared":self.prepared,"playback_started":self.started,"playback_requested":self.playing,"completed_loops":self.loops}),
         )
     }
 }
@@ -252,6 +257,10 @@ pub fn run() -> Result<()> {
     let mut controller_failure_handled = false;
     let mut restored_button_goal = 6;
     let mut clock_starts = Vec::new();
+    let mut clock_start_count = 0u64;
+    let mut pauses = Pauses::default();
+    let mut pause_events = Vec::new();
+    let mut pause_event_count = 0u64;
     let deadline = Instant::now() + Duration::from_secs(args.seconds);
     loop {
         queue.dispatch_pending(&mut state)?;
@@ -300,6 +309,21 @@ pub fn run() -> Result<()> {
             incoming
         } else {
             None
+        };
+        let incoming = if let Some(Command::SetPause { reason, paused }) = incoming {
+            if pauses.set(reason, paused) {
+                pause_event_count += 1;
+                let reasons = pauses.active().collect::<Vec<_>>();
+                if pause_events.len() < 32 {
+                    pause_events.push(
+                        serde_json::json!({"reason":reason,"paused":paused,"active":reasons}),
+                    );
+                }
+                eprintln!("Replacement pause policy changed: {reasons:?}");
+            }
+            None
+        } else {
+            incoming
         };
         if state.discarded > handled_discards {
             ensure!(
@@ -391,9 +415,7 @@ pub fn run() -> Result<()> {
                 .as_mut()
                 .context("transition source missing")?;
             if index == 0 || candidate_failure.is_none() {
-                source.media.resume()?;
-                source.started = true;
-                clock_starts.push(serde_json::json!({"source":index,"presented_frame_id":id}));
+                source.presented_id = Some(id);
             }
             candidate_first_confirmed |= index == 1;
             if phase == Phase::Restoring {
@@ -447,6 +469,9 @@ pub fn run() -> Result<()> {
         if let Some(command) = incoming {
             let valid = command_pending.is_none()
                 && match command {
+                    Command::SetPause { .. } => {
+                        unreachable!("pause commands were handled separately")
+                    }
                     Command::Publish => {
                         phase == Phase::Previous
                             && old_ready
@@ -637,6 +662,38 @@ pub fn run() -> Result<()> {
                 | Phase::Aborted
                 | Phase::Failed
                 | Phase::Finalized
+        ) && let Some(index) = tree.active()
+            && let Some(source) = sources[index].as_mut()
+        {
+            let should_play = !pauses.is_paused()
+                && source.presented_id.is_some()
+                && (index == 0 || candidate_failure.is_none());
+            if should_play && !source.playing {
+                source.media.resume()?;
+                source.playing = true;
+                source.started = true;
+                clock_start_count += 1;
+                if clock_starts.len() < 256 {
+                    clock_starts.push(serde_json::json!({"source":index,"presented_frame_id":source.presented_id}));
+                }
+                eprintln!("Replacement playback resumed: source={index}");
+            } else if !should_play && source.playing {
+                let paused = source.media.pause();
+                if index == 0 || candidate_failure.is_none() {
+                    paused?;
+                }
+                source.playing = false;
+                eprintln!("Replacement playback paused: source={index}");
+            }
+        }
+        if matches!(
+            phase,
+            Phase::Previous
+                | Phase::Candidate
+                | Phase::Restored
+                | Phase::Aborted
+                | Phase::Failed
+                | Phase::Finalized
         ) {
             state.inject_if_ready();
         }
@@ -746,7 +803,7 @@ pub fn run() -> Result<()> {
                 // Only the old source's last rendered sample is retained for rollback.
                 // Do not consume its asynchronous pause preroll until after restoration.
                 if kind == "publish" {
-                    let previous = sources[0].as_ref().context("previous source missing")?;
+                    let previous = sources[0].as_mut().context("previous source missing")?;
                     rollback_pts = previous
                         .current
                         .as_ref()
@@ -754,6 +811,7 @@ pub fn run() -> Result<()> {
                         .and_then(|buffer| buffer.pts())
                         .map(|pts| pts.nseconds());
                     previous.media.pause()?;
+                    previous.playing = false;
                     phase = Phase::Publishing;
                 } else if kind == "rollback" {
                     let paused = sources[1]
@@ -763,6 +821,9 @@ pub fn run() -> Result<()> {
                         .pause();
                     if candidate_failure.is_none() {
                         paused?;
+                    }
+                    if let Some(candidate) = sources[1].as_mut() {
+                        candidate.playing = false;
                     }
                     phase = Phase::Restoring;
                 }
@@ -830,6 +891,7 @@ pub fn run() -> Result<()> {
             && transition.is_none()
             && let Some(index) = tree.active()
             && let Some(source) = sources[index].as_mut()
+            && source.playing
             && source.media.eos
             && !source.media.has_sample()?
             && !source.dirty
@@ -855,6 +917,10 @@ pub fn run() -> Result<()> {
         }
         if !leases.is_empty() {
             next = next.min(Instant::now() + Duration::from_millis(1));
+        }
+        if control.has_buffered_command() {
+            connection.flush()?;
+            continue;
         }
         let watched = [reader.as_fd(), control.as_fd()];
         let watched_count = if control.is_closed() { 1 } else { 2 };
@@ -896,6 +962,8 @@ pub fn run() -> Result<()> {
     report["discard_injected"] = discard_injected.into();
     report["handled_candidate_discards"] = handled_discards.into();
     report["discarded_frame_ids"] = serde_json::json!(state.discarded_frame_ids);
+    report["pause_policy"] = serde_json::json!({"active":pauses.active().collect::<Vec<_>>(), "event_count":pause_event_count, "events":pause_events});
+    report["clock_start_count"] = clock_start_count.into();
     report["feedback_history_saturated"] = args.saturate_feedback_history.into();
     report["candidate_presentation_receipt"] = serde_json::json!(candidate_receipt.as_ref().map(|receipt|
         serde_json::json!({"submission_id":receipt.submission_id(), "completion":receipt.completion()})));

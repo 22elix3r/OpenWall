@@ -197,6 +197,17 @@ retained. These are integration requirements, not implemented IPC/manager behavi
 The [two-source diagnostic](video-replacement-probe.md) currently establishes explicit
 publication/rollback and pre-publication media failure handling in one process, with
 injected post-publication media-error rollback and explicit finalization retirement.
+Playback policy reasons are combined independently in `playback::Pauses`. The private
+video replacement control currently exercises user and power-policy reasons. Clearing
+one producer's reason is idempotent and cannot resume content while another remains.
+Policy state does not confer presentation authority: only the active, confirmed stable
+source may receive a PLAYING request. Publication/restoration may present a static frame
+while policy is paused, including after controller loss; retained and hidden sources
+stay in PAUSED. Rewind waits until playback is permitted again. Buffered complete control
+commands are drained before another wait, including when no media events can wake the
+loop. Actual platform power/lock/visibility producers and durable policy ownership still
+belong to the manager integration work.
+
 Per-registration presentation receipts retain terminal bookkeeping independently of
 bounded diagnostic histories. The video replacement path uses exact receipts to gate
 clocks and identify an active candidate discard; a full history cannot suppress a later

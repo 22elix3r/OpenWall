@@ -160,6 +160,24 @@ cleanup has three creations/two destructions without terminating that owner. Mis
 and malformed next candidates also retain moving committed video. This qualifies a
 second preparation and retirement, not publication/commit of arbitrary repeated sources.
 
+The diagnostic accepts `pause user\n`, `resume user\n`, `pause power\n` and
+`resume power\n`. The reusable `playback::Pauses` policy combines these independent
+reasons; duplicate updates are idempotent and clearing one reason cannot clear another.
+Policy permission is separate from presentation/transaction eligibility. A hidden or
+unconfirmed source never starts just because policy reasons become empty. A confirmed
+published/restored frame may remain static while paused, then resume only after all
+policy reasons clear. Retained-source restoration and controller loss preserve active
+pause reasons. EOS rewind is deferred while playback is paused.
+
+Per-source requested playback state avoids redundant GStreamer state changes. Reports
+include bounded pause-event and clock-start histories plus total counters. Complete
+commands already buffered from the stream are consumed before polling again, so an
+idempotent command followed by resume can progress while media/Wayland are idle. Private Mesa desktop GL/GLES and NVIDIA desktop GL tests cover frozen pixels,
+combined/idempotent updates, initially paused presentation, coalesced resume during idle,
+publication/restoration while paused and controller-loss restoration that stays paused.
+These are private control-injected user/power reasons; production GUI controls, real OS power,
+lock/visibility signals, persistence and manager policy ownership remain open.
+
 `--control-stdin` accepts an inherited, connected Unix stream from the same effective
 user instead of the legacy diagnostic datagram socket. Commands remain newline framed,
 with a bounded partial-command buffer; fragmented commands are accepted. EOF, truncated,
