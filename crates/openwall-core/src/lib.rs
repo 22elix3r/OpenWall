@@ -4,6 +4,7 @@
 //! This crate has no desktop, GUI, or GPU dependencies.
 
 pub mod assets;
+pub mod inspection;
 pub mod media;
 pub mod scene;
 

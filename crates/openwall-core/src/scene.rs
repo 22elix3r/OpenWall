@@ -6,12 +6,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::Assets;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompatibilityReport {
     pub title: String,
     pub kind: String,

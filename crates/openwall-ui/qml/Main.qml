@@ -88,8 +88,8 @@ ApplicationWindow {
                         }
                         ColumnLayout {
                             anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 28; spacing: 8
-                            Label { text: backend.title; color: "#ffffff"; font.pixelSize: 32; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
-                            Label { text: backend.details; color: "#acb8cb"; font.pixelSize: 12 }
+                            Label { text: backend.title; textFormat: Text.PlainText; color: "#ffffff"; font.pixelSize: 32; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
+                            Label { text: backend.details; textFormat: Text.PlainText; color: "#acb8cb"; font.pixelSize: 12 }
                         }
                     }
                     RowLayout {
@@ -117,7 +117,7 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true; spacing: 12
                 Rectangle { width: 7; height: 7; radius: 4; color: backend.active ? "#9bded1" : "#64718c" }
-                Label { text: backend.status; color: "#9ca9c1"; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true; maximumLineCount: 3; elide: Text.ElideRight; Accessible.role: Accessible.StaticText }
+                Label { text: backend.status; textFormat: Text.PlainText; color: "#9ca9c1"; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true; maximumLineCount: 3; elide: Text.ElideRight; Accessible.role: Accessible.StaticText }
                 BusyIndicator { running: backend.busy; visible: running; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
                 Button { text: "Reset to sample"; flat: true; enabled: !backend.busy; onClicked: backend.sample() }
             }

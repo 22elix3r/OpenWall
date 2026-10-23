@@ -85,6 +85,16 @@ reader threads; a continuously noisy pipe cannot starve the deadline or the othe
 An application-owned query scope allows at most eight jobs, reclaims completed thread
 handles, and cancels/joins active jobs before the Qt engine is destroyed.
 
+Inspection success responses carry schema version 1 and are decoded through a bounded
+shared data contract before reaching Qt. Missing/malformed fields, unknown versions or
+content kinds, and invalid image/scene dimensions fail without changing the selection.
+Video dimensions can remain zero until native decode. The GUI's busy state clears on
+these errors. This is the current inspector response contract, not the future manager's
+versioned request/response protocol. CLI inspection retains full compatibility details;
+the GUI rejects responses exceeding its 64 KiB query/report budget.
+Titles, details and worker diagnostics are rendered as plain text; imported strings
+cannot opt those labels into Qt's rich-text/inline-image behavior.
+
 Each query starts a new process group. The sole waiter observes exit with `waitid`
 and `WNOWAIT`, preserving the leader's PID until group termination and final reaping.
 This prevents signaling a reused numeric process-group ID after early parent exit,

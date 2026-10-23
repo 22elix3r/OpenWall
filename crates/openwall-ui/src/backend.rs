@@ -128,7 +128,21 @@ impl ffi::Backend {
             let result = crate::query::run(
                 Command::new(player()).arg("inspect").arg(&path),
                 std::time::Duration::from_secs(10),
-            );
+            )
+            .map_err(|error| format!("Could not read wallpaper: {error}"))
+            .and_then(|output| {
+                if !output.status.success() {
+                    let error = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                    return Err(if error.is_empty() {
+                        "The player could not inspect this wallpaper.".into()
+                    } else {
+                        error
+                    });
+                }
+                openwall_core::inspection::Inspection::from_json(&output.stdout)
+                    .map(|inspection| inspection.report)
+                    .map_err(|error| format!("Could not read wallpaper: {error}"))
+            });
             if crate::query::is_closing() {
                 return;
             }
@@ -138,21 +152,23 @@ impl ffi::Backend {
                 }
                 object.as_mut().set_busy(false);
                 match result {
-                    Ok(output) if output.status.success() => {
-                        let report: serde_json::Value =
-                            serde_json::from_slice(&output.stdout).unwrap_or_default();
+                    Ok(report) => {
                         object
                             .as_mut()
                             .set_selected(QString::from(path.to_string_lossy().as_ref()));
-                        object.as_mut().set_title(QString::from(
-                            report["title"].as_str().unwrap_or("Local wallpaper"),
-                        ));
-                        let details = if report["kind"] == "video" {
+                        object
+                            .as_mut()
+                            .set_title(QString::from(if report.title.is_empty() {
+                                "Local wallpaper"
+                            } else {
+                                report.title.as_str()
+                            }));
+                        let details = if report.kind == "video" {
                             "Native video playback".to_owned()
                         } else {
                             format!(
                                 "{} × {}  ·  {} layers",
-                                report["width"], report["height"], report["layers"]
+                                report.width, report.height, report.layers
                             )
                         };
                         object.as_mut().set_details(QString::from(details.as_str()));
@@ -172,17 +188,14 @@ impl ffi::Backend {
                         object
                             .as_mut()
                             .set_preview_url(QString::from(preview.as_str()));
-                        let unsupported = report["unsupported"]
-                            .as_array()
-                            .is_some_and(|x| !x.is_empty());
+                        let unsupported = !report.unsupported.is_empty();
                         object.message(if unsupported {
                             "This wallpaper uses features that are not supported yet."
                         } else {
                             "Ready"
                         });
                     }
-                    Ok(output) => object.message(String::from_utf8_lossy(&output.stderr)),
-                    Err(error) => object.message(format!("Could not read wallpaper: {error}")),
+                    Err(error) => object.message(error),
                 }
             });
         });
