@@ -45,7 +45,7 @@ jobs:
         run: |
           python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/benchmark_native_gl_video.py scripts/test_video_transfer_probe.py scripts/video_color_fixtures.py scripts/private_gpu.py scripts/test_video_color.py scripts/test_owned_gl_sequence.py scripts/test_owned_egl_wayland.py scripts/test_shared_egl_session.py scripts/test_staged_egl.py scripts/test_nested_egl.py scripts/test_nvidia_gl_interop.py scripts/test_native_gl_video.py scripts/test_shared_video_outputs.py scripts/test_video_replacement.py scripts/build_wayland_runtime.py scripts/test_wayland_runtime.py
           node --input-type=module --check < integrations/gnome/presentation.js
-      - name: Measurement harness process tests
+      - name: Integration harness process tests
         run: python3 -m unittest discover -s scripts/tests -v
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Optional shared-GL probe compile checks

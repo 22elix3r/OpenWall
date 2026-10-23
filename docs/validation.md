@@ -68,6 +68,16 @@ These tests are also run in Linux CI with software rendering. They exercise real
 protocol objects and composited pixels, but do not measure physical GPU performance,
 power savings or physical display suspend/reconnection.
 
+The merged-main [Ubuntu 26.04 run](https://github.com/22elix3r/OpenWall/actions/runs/39473398975)
+failed on its first `swaymsg get_outputs`, after socket discovery but before worker
+creation. That log did not preserve IPC stderr or the compositor diagnostic tail, so
+it cannot establish whether the server was still starting or had failed. Socket
+presence now precedes a bounded IPC-readiness wait: startup query failures retry only
+while the compositor remains alive. Compositor exit fails promptly; the original
+15-second wait remains finite, and failure includes the last IPC error and compositor
+log. Later runtime IPC errors still fail immediately. Deterministic tests cover an
+early connection failure/timeout, persistent failure and compositor exit during a query.
+
 Install `sway`, `grim`, Pillow and Mesa's Vulkan software driver to run:
 
 ```sh
