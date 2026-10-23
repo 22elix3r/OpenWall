@@ -60,6 +60,7 @@ jobs:
       - name: Optional shared-GL probe compile checks
         if: runner.os == 'Linux'
         run: |
+          cargo clippy -p openwall --lib --no-default-features --locked -- -D warnings
           cargo clippy -p openwall --lib --no-default-features --features native-egl --locked -- -D warnings
           cargo clippy -p openwall --examples --features video-gl-probe --locked -- -D warnings
       - run: cargo build --workspace --locked

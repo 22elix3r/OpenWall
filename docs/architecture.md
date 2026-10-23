@@ -132,6 +132,17 @@ The [native EGL runtime](native-egl-runtime.md) now supplies the reusable Linux 
 context/window ownership boundary used by the conformance programs. It remains optional;
 normal production playback and non-Linux presenters do not silently switch backend.
 
+`presentation::wayland_tree::Tree` supplies the reusable two-branch synchronized
+publication tree independently of EGL/GStreamer. The adapter supplies a configured
+root and its globals, retains its desktop role, and delegates root buffer/viewport
+commits to the tree. Native windows must disappear before branch retirement. Root
+input/configure policy stays with the adapter; both content branches have empty input
+regions. The last submitted branch is private bookkeeping exposed read-only, and does
+not establish actual presentation. The caller still gates readiness and persistence/
+finalization on feedback. Geometry remains fixed and repeated candidates remain open.
+The video conformance program now exercises this library implementation; its State
+binding, input witness and forced-discard controls remain outside the runtime.
+
 The current launcher does not implement that transaction or a restart policy. There is
 no stable external plugin ABI. GNOME/Plasma adapters must remain minimal trusted
 presentation shims; media decoding, scripts and shader compilation stay out of the shell.
