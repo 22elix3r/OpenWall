@@ -5,6 +5,7 @@ mod control;
 mod decoder_trace;
 use openwall::native_egl::gl_api;
 use openwall::native_egl::window as egl_window;
+use openwall::presentation::feedback::{Completion, Receipt};
 #[path = "../probe_support/gl_painter.rs"]
 mod gl_painter;
 #[path = "../native_gl_video_probe/media.rs"]
@@ -74,6 +75,9 @@ struct Args {
     /// Prepare another hidden candidate in the retired slot after committing the first.
     #[arg(long, conflicts_with_all = ["fail_candidate_after_ms", "fail_before_candidate_confirmation", "discard_candidate_submission", "discard_restoration_submission"])]
     reprepare_after_finalize: Option<PathBuf>,
+    /// Fill diagnostic presentation history before starting; readiness must use receipts.
+    #[arg(long)]
+    saturate_feedback_history: bool,
 }
 
 struct Source {
@@ -156,6 +160,10 @@ pub fn run() -> Result<()> {
         media::wake(&signal_writer);
     })?;
     let (connection, mut queue, mut state) = wayland::connect(&args.output, args.intercept_input)?;
+    if args.saturate_feedback_history {
+        state.presented_frame_ids = (u64::MAX - 255..=u64::MAX).collect();
+        state.discarded_frame_ids = state.presented_frame_ids.clone();
+    }
     let startup = Instant::now() + Duration::from_secs(10);
     while state.configured.is_none() {
         queue.dispatch_pending(&mut state)?;
@@ -203,11 +211,11 @@ pub fn run() -> Result<()> {
     let finishes = Cell::new(0);
     let mut leases = VecDeque::new();
     let mut records = Vec::new();
-    let mut last_visible_submission = None;
+    let mut last_visible_submission: Option<(Receipt, usize)> = None;
     let mut retired = 0;
     let mut peak = 0;
     let mut phase = Phase::Initial;
-    let mut transition: Option<u64> = None;
+    let mut transition: Option<Receipt> = None;
     let mut feedback_deadline = None;
     let mut validation_deadline = None;
     let mut prepared_deadline = None;
@@ -229,6 +237,7 @@ pub fn run() -> Result<()> {
     let mut auto_rollback = false;
     let mut candidate_first_confirmed = false;
     let mut candidate_publication_id = None;
+    let mut candidate_receipt: Option<Receipt> = None;
     let mut early_cancel_requested = false;
     let mut early_cancel_applied = false;
     let mut handled_discards = 0;
@@ -275,9 +284,9 @@ pub fn run() -> Result<()> {
                 Phase::Initial | Phase::Previous | Phase::Publishing | Phase::Candidate => {
                     candidate_failure.get_or_insert_with(|| reason.clone());
                     if phase == Phase::Candidate
-                        && let Some((id, 1)) = last_visible_submission
+                        && let Some((receipt, 1)) = &last_visible_submission
                     {
-                        state.cancel_frame_feedback(id);
+                        state.cancel_frame_feedback(receipt.submission_id());
                     }
                 }
                 Phase::Finalized if reprepare_started && reprepare_removal_counts.is_none() => {
@@ -293,12 +302,13 @@ pub fn run() -> Result<()> {
             None
         };
         if state.discarded > handled_discards {
-            let discarded = &state.discarded_frame_ids[handled_discards as usize..];
             ensure!(
                 matches!(phase, Phase::Publishing | Phase::Candidate)
-                    && discarded
-                        .iter()
-                        .all(|id| last_visible_submission == Some((*id, 1))),
+                    && state.discarded == handled_discards + 1
+                    && last_visible_submission
+                        .as_ref()
+                        .is_some_and(|(receipt, index)| *index == 1
+                            && receipt.completion() == Some(Completion::Discarded)),
                 "previous/restoration/finalized presentation discarded"
             );
             candidate_failure.get_or_insert_with(|| "candidate presentation discarded".to_owned());
@@ -352,7 +362,8 @@ pub fn run() -> Result<()> {
         if candidate_failure.is_some() && phase == Phase::Publishing {
             let id = transition
                 .take()
-                .context("failed publication feedback missing")?;
+                .context("failed publication feedback missing")?
+                .submission_id();
             early_cancel_applied = state.cancel_frame_feedback(id);
             early_cancel_requested = true;
             command_pending = Some(Command::Rollback);
@@ -371,9 +382,10 @@ pub fn run() -> Result<()> {
                 "replacement consumer fence timed out"
             );
         }
-        if let Some(id) = transition
-            && state.presented_frame_ids.contains(&id)
+        if let Some(receipt) = &transition
+            && receipt.completion() == Some(Completion::Presented)
         {
+            let id = receipt.submission_id();
             let index = if phase == Phase::Publishing { 1 } else { 0 };
             let source = sources[index]
                 .as_mut()
@@ -713,14 +725,16 @@ pub fn run() -> Result<()> {
             let id = records.len() as u64 + 1;
             let discard_requested = kind == "publish" && args.discard_candidate_submission
                 || kind == "rollback" && args.discard_restoration_submission;
+            let mut feedback = None;
             if visible {
                 let target = if discard_requested {
                     tree.container(index)?
                 } else {
                     tree.surface(index)?
                 };
-                state.request_surface_feedback(&queue.handle(), target, id)?;
-                last_visible_submission = Some((id, index));
+                let receipt = state.request_surface_feedback(&queue.handle(), target, id)?;
+                last_visible_submission = Some((receipt.clone(), index));
+                feedback = Some(receipt);
             }
             window.present()?;
             let refresh = window.take_refresh();
@@ -763,8 +777,9 @@ pub fn run() -> Result<()> {
                 } else {
                     tree.show(index)?;
                 }
-                transition = Some(id);
+                transition = feedback;
                 if kind == "publish" {
+                    candidate_receipt = transition.clone();
                     candidate_publication_id = Some(id);
                     if args.fail_before_candidate_confirmation {
                         sources[1]
@@ -870,7 +885,7 @@ pub fn run() -> Result<()> {
         "finalized":phase==Phase::Finalized,"retired_previous_lifecycle":finalization_counts,
         "finalization_frame_id":finalization_frame_id,
         "fault_injected":fault_injected,"automatic_rollback":auto_rollback,
-        "candidate_first_frame_confirmed":candidate_publication_id.is_some_and(|id|state.presented_frame_ids.contains(&id)),
+        "candidate_first_frame_confirmed":candidate_receipt.as_ref().is_some_and(|receipt|matches!(receipt.completion(), Some(Completion::Presented | Completion::CancelledPresented))),
         "candidate_readiness_accepted":candidate_first_confirmed,"candidate_publication_id":candidate_publication_id,
         "early_cancel_requested":early_cancel_requested,"early_cancel_applied":early_cancel_applied,
         "presentation_feedback":state.feedback_tracker.snapshot(),
@@ -881,6 +896,9 @@ pub fn run() -> Result<()> {
     report["discard_injected"] = discard_injected.into();
     report["handled_candidate_discards"] = handled_discards.into();
     report["discarded_frame_ids"] = serde_json::json!(state.discarded_frame_ids);
+    report["feedback_history_saturated"] = args.saturate_feedback_history.into();
+    report["candidate_presentation_receipt"] = serde_json::json!(candidate_receipt.as_ref().map(|receipt|
+        serde_json::json!({"submission_id":receipt.submission_id(), "completion":receipt.completion()})));
     report["controller_failure"] = serde_json::json!(controller_failure);
     report["control_transport"] = if args.control_stdin {
         "inherited_unix_stream"

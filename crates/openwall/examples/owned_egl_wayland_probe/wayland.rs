@@ -4,7 +4,7 @@ mod nested;
 #[allow(dead_code)] // The two-source diagnostic uses a persistent root with two native children.
 pub(super) mod video_tree;
 use anyhow::{Context, Result, ensure};
-use openwall::presentation::feedback::{Completion, Tracker};
+use openwall::presentation::feedback::{Completion, Receipt, Tracker};
 use std::{collections::BTreeMap, io::Write, os::fd::AsFd};
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop,
@@ -396,7 +396,7 @@ impl State {
 
     fn request_root_feedback(&mut self, qh: &QueueHandle<Self>, id: u64) -> Result<()> {
         let surface = self.surface.as_ref().context("root missing")?.clone();
-        self.request_surface_feedback(qh, &surface, id)
+        self.request_surface_feedback(qh, &surface, id).map(|_| ())
     }
 
     #[allow(dead_code)] // Caller waits for candidate presentation before rollback.
@@ -430,6 +430,7 @@ impl State {
     pub fn request_frame_feedback(&mut self, qh: &QueueHandle<Self>, frame_id: u64) -> Result<()> {
         let surface = self.render_surface()?.clone();
         self.request_surface_feedback(qh, &surface, frame_id)
+            .map(|_| ())
     }
 
     pub fn request_surface_feedback(
@@ -437,15 +438,15 @@ impl State {
         qh: &QueueHandle<Self>,
         surface: &wl_surface::WlSurface,
         frame_id: u64,
-    ) -> Result<()> {
+    ) -> Result<Receipt> {
         let presentation = self
             .presentation
             .as_ref()
             .context("presentation feedback missing")?;
-        self.feedback_tracker.register(frame_id)?;
+        let receipt = self.feedback_tracker.register(frame_id)?;
         presentation.feedback(surface, qh, frame_id);
         self.pending_feedback = true;
-        Ok(())
+        Ok(receipt)
     }
 
     #[allow(dead_code)] // A failed candidate must not retain readiness authority.
