@@ -124,8 +124,14 @@ impl ffi::Backend {
         self.as_mut().set_busy(true);
         self.as_mut().message("Reading wallpaper…");
         let qt = self.qt_thread();
-        std::thread::spawn(move || {
-            let result = Command::new(player()).arg("inspect").arg(&path).output();
+        let launched = crate::query::spawn(move || {
+            let result = crate::query::run(
+                Command::new(player()).arg("inspect").arg(&path),
+                std::time::Duration::from_secs(10),
+            );
+            if crate::query::is_closing() {
+                return;
+            }
             let _ = qt.queue(move |mut object| {
                 if object.rust().generation != generation {
                     return;
@@ -176,12 +182,14 @@ impl ffi::Backend {
                         });
                     }
                     Ok(output) => object.message(String::from_utf8_lossy(&output.stderr)),
-                    Err(_) => object.message(
-                        "The wallpaper player is missing. Install the complete OpenWall package.",
-                    ),
+                    Err(error) => object.message(format!("Could not read wallpaper: {error}")),
                 }
             });
         });
+        if let Err(error) = launched {
+            self.as_mut().set_busy(false);
+            self.message(format!("Could not read wallpaper: {error}"));
+        }
     }
 
     pub fn start(mut self: Pin<&mut Self>, desktop: bool, output: &QString) {
@@ -265,21 +273,26 @@ impl ffi::Backend {
 
     pub fn discover_outputs(self: Pin<&mut Self>) {
         let qt = self.qt_thread();
-        std::thread::spawn(move || {
-            let discovery = Command::new(player())
-                .arg("outputs")
-                .output()
-                .ok()
-                .filter(|result| result.status.success())
-                .and_then(|result| {
-                    serde_json::from_slice::<serde_json::Value>(&result.stdout).ok()
-                });
+        let launched = crate::query::spawn(move || {
+            let discovery = crate::query::run(
+                Command::new(player()).arg("outputs"),
+                std::time::Duration::from_secs(5),
+            )
+            .ok()
+            .filter(|result| result.status.success())
+            .and_then(|result| serde_json::from_slice::<serde_json::Value>(&result.stdout).ok());
             let json = crate::outputs::choices(discovery.as_ref());
+            if crate::query::is_closing() {
+                return;
+            }
             let _ = qt.queue(move |mut object| {
                 object
                     .as_mut()
                     .set_outputs_json(QString::from(json.as_str()))
             });
         });
+        if let Err(error) = launched {
+            self.message(format!("Could not list displays: {error}"));
+        }
     }
 }

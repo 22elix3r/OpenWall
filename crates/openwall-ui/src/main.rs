@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod backend;
 mod outputs;
+mod query;
 mod worker;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
@@ -20,4 +21,7 @@ fn main() {
     if let Some(app) = app.as_mut() {
         app.exec();
     }
+    // Keep the Qt engine alive until query threads have cancelled/reaped their
+    // children and can no longer enqueue callbacks against its Rust objects.
+    query::shutdown();
 }
