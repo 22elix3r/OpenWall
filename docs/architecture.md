@@ -120,7 +120,17 @@ This prevents signaling a reused numeric process-group ID after early parent exi
 and bounds queries when ordinary descendants retain inherited pipes. GUI shutdown
 also terminates active query groups. This is lifecycle management, not an OS content
 sandbox or the future persistent manager's worker supervisor. Normal wallpaper
-playback remains managed separately from these short-lived queries.
+playback remains managed separately from these short-lived queries. Playback/preview
+workers now share the same sole-waiter process-group owner. Their diagnostic reader
+uses nonblocking reads plus a wake socket, retains a 16 KiB tail, and is joined on
+observed process exit or worker destruction. An exited leader's ordinary descendants
+are terminated before it is reaped, even when they retain stderr. After reaping,
+repeated status checks/cleanup never signal its former numeric process-group ID.
+Final diagnostics are drained before the GUI reports exit; post-stop draining is
+bounded so an escaped writer cannot keep the reader alive indefinitely. Closed stderr
+alone does not end a running worker. Observation errors clear the GUI's running state.
+These paths cover normal user-space process cleanup, not escaped process sessions,
+blocked kernel/driver waits or a persistent restart supervisor.
 
 macOS display discovery runs a separate windowless winit/AppKit main-thread event loop.
 Enumeration reports native display identifiers and physical geometry; Apply resolves

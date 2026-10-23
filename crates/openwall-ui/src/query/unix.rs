@@ -2,52 +2,19 @@
 use rustix::{
     event::{PollFd, PollFlags, Timespec, poll},
     fs::{OFlags, fcntl_getfl, fcntl_setfl},
-    process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid},
 };
 use std::{
     collections::VecDeque,
     io::{self, Read},
-    os::{fd::AsFd, unix::process::CommandExt},
-    process::{Child, Command, ExitStatus, Output, Stdio},
+    os::fd::AsFd,
+    process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
 
 const OUTPUT_LIMIT: usize = 64 * 1024;
 const ERROR_LIMIT: usize = 16 * 1024;
 
-struct Process {
-    child: Child,
-    group: Pid,
-    reaped: bool,
-}
-
-impl Process {
-    fn exited(&self) -> io::Result<bool> {
-        Ok(waitid(
-            WaitId::Pid(self.group),
-            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
-        )?
-        .is_some())
-    }
-
-    fn finish(&mut self) -> io::Result<ExitStatus> {
-        // We are the sole waiter. WNOWAIT preserves the leader's PID until after
-        // group termination, including when a descendant retains a pipe. Never
-        // signal a numeric group ID after reaping its leader and allowing reuse.
-        let _ = kill_process_group(self.group, Signal::KILL);
-        let result = self.child.wait();
-        self.reaped = true;
-        result
-    }
-}
-
-impl Drop for Process {
-    fn drop(&mut self) {
-        if !self.reaped {
-            let _ = self.finish();
-        }
-    }
-}
+use crate::process::Process;
 
 struct Pipe<R> {
     reader: R,
@@ -114,18 +81,7 @@ pub fn run(
         .ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid player query timeout")
         })?;
-    let child = command
-        .process_group(0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let group = Pid::from_child(&child);
-    let mut process = Process {
-        child,
-        group,
-        reaped: false,
-    };
+    let mut process = Process::spawn(command, Stdio::piped())?;
     let mut stdout = Pipe::new(
         process.child.stdout.take().expect("piped stdout"),
         OUTPUT_LIMIT,
