@@ -234,6 +234,34 @@ def main():
             assert next(frame for frame in recovery["frames"] if frame["kind"] == "rollback")["pts_ns"] == recovery["rollback_pts_ns"], recovery
             wait_for(empty, "automatic media-error rollback cleanup")
 
+            early, log = spawn(extra=["--fail-before-candidate-confirmation"])
+            session.expect_log(early, log, "Replacement candidate cached; previous video continues")
+            command(early, b"publish\n")
+            session.expect_log(early, log, "Replacement candidate readiness cancelled; restoring retained previous video")
+            until = time.monotonic() + 8
+            while time.monotonic() < until:
+                source, _ = pixels(early, [0, 1])
+                if source == 0 and "Replacement previous video restored; pointer reached witness" in session.text(log):
+                    break
+            else:
+                raise AssertionError("candidate failure before readiness did not restore previous video")
+            moving(early, 0)
+            early.send_signal(signal.SIGINT)
+            early_report = json.loads(finish(early))
+            assert early.returncode == 0 and early_report["status"] == "passed", session.diagnostics()
+            validate(early_report)
+            assert early_report["early_cancel_requested"] and early_report["automatic_rollback"] and early_report["fault_injected"], early_report
+            assert early_report["previous_restored"] and not early_report["candidate_readiness_accepted"] and not early_report["candidate_presented"], early_report
+            assert not early_report["candidate"]["playback_started"] and early_report["candidate"]["delivery"]["received"] == 1, early_report
+            assert [start["source"] for start in early_report["clock_starts"]] == [0, 0] and early_report["witness_button_events"] == 4, early_report
+            feedback = early_report["presentation_feedback"]
+            assert feedback["cancelled"] == int(early_report["early_cancel_applied"]), early_report
+            assert feedback["cancelled_presented"] + feedback["cancelled_discarded"] == feedback["cancelled"], early_report
+            assert feedback["pending"] == feedback["active"] <= feedback["limit"] == 16, early_report
+            assert early_report["removed_candidate_lifecycle"] == dict(LIFECYCLE, surface_destructions=1, context_destructions=0, display_terminations=0), early_report
+            assert next(frame for frame in early_report["frames"] if frame["kind"] == "rollback")["pts_ns"] == early_report["rollback_pts_ns"], early_report
+            wait_for(empty, "cancelled publication feedback cleanup")
+
             finalized, log = spawn()
             session.expect_log(finalized, log, "Replacement candidate cached; previous video continues")
             command(finalized, b"publish\n")
@@ -311,10 +339,13 @@ def main():
                       "gl":report["gl"], "visible_markers":[sorted(old_seen),sorted(candidate_seen),sorted(restored_seen)],
                       "sampled_compositor_frames":captures,"max_compositor_channel_error":maximum_error,
                       "egl_lifecycle":report["egl_lifecycle"],"consumer_fences":report["consumer_fences"],
+                      "early_cancellation_feedback":feedback,
+                      "early_candidate_was_presented":early_report["candidate_first_frame_confirmed"],
                       "checks":["distinct old/new sources", "old video moves while candidate paused", "presentation-gated clocks",
                                 "sampled publication/rollback pixels", "rollback retained PTS", "video moves after restoration",
                                 "abort and malformed candidate retain moving previous video", "real input", "unchanged second output",
                                 "injected post-publication media error restores previous video", "failed/rolled-back candidate retired",
+                                "failed candidate readiness never starts its clock", "late cancelled feedback cannot complete restoration",
                                 "finalize retires previous source while candidate keeps moving and looping",
                                 "input negative control", "SIGKILL", "compositor loss"]}))
 

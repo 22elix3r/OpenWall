@@ -62,6 +62,23 @@ are removed. The harness checks moving candidate frames before this fault and mo
 previous frames afterwards. It injects a bus error; it does not corrupt an actual decoder
 or reproduce a decoder/driver crash.
 
+`--fail-before-candidate-confirmation` posts the same error immediately after the
+candidate publication is queued, before the worker accepts readiness. Error handling
+cancels that submission's local readiness authority and queues restoration without
+waiting for the failed candidate. The candidate clock must never start. Publication
+was already sent to the compositor, so a candidate frame may briefly be displayed;
+the report preserves that actual presentation history separately from accepted readiness.
+
+The cross-platform `presentation::feedback::Tracker` bounds outstanding primary
+feedback identities at sixteen. Cancellation retains an identity until its terminal
+event: `wp_presentation_feedback` has no client cancellation request. A late presented
+or discarded event for a cancelled submission cannot clear an active restoration wait.
+Cancelled discards are counted separately from unexpected active discards. Pure Rust
+tests exercise both terminal event orders and capacity exhaustion; private compositor
+tests check early error recovery, the exact retained previous PTS, four witness button
+events, candidate retirement and continued previous playback. Which cancelled terminal
+event occurs depends on compositor timing; both are valid.
+
 ## Evidence and remaining gates
 
 Private Ubuntu 26.04/Sway 1.11/Mesa 26.0.8/GStreamer 1.28.2 passes desktop GL and GLES.
@@ -90,8 +107,9 @@ paths show one of two native windows destroyed, with the context/display still a
 This is a bounded private diagnostic with fixed published geometry, logical-size SDR
 buffers and one transaction. It is not general worker IPC, production Apply or a content
 sandbox. Injected media-bus errors after confirmed candidate readiness now have automatic
-rollback coverage. Real post-publication decoder failures, errors before first candidate
-confirmation, lost/discarded presentation feedback, control-connection loss and rollback
+rollback coverage, including an error before candidate readiness is accepted. Real
+post-publication decoder failures, lost/discarded active presentation feedback,
+control-connection loss and rollback
 failure still need qualification. A decoder/worker process crash loses both in-process
 sources; manager restart/static fallback remains necessary. Repeated candidates,
 replacing a committed candidate, device loss, dynamic output geometry, multi-output visual

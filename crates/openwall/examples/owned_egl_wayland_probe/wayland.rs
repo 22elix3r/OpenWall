@@ -4,6 +4,7 @@ mod nested;
 #[allow(dead_code)] // The two-source diagnostic uses a persistent root with two native children.
 pub(super) mod video_tree;
 use anyhow::{Context, Result, ensure};
+use openwall::presentation::feedback::{Completion, Tracker};
 use std::{collections::BTreeMap, io::Write, os::fd::AsFd};
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop,
@@ -59,6 +60,7 @@ pub(super) struct State {
     pub configured: Option<(u32, u32)>,
     pub dirty: bool,
     pub pending_feedback: bool,
+    pub feedback_tracker: Tracker,
     pub presented: u32,
     pub presented_frame_ids: Vec<u64>,
     pub discarded: u32,
@@ -189,6 +191,7 @@ impl State {
         self.configured = None;
         self.dirty = false;
         self.pending_feedback = false;
+        self.feedback_tracker.cancel_all();
     }
     #[allow(dead_code)] // Explicit staged-child mode; normal probes keep their root.
     pub fn enable_staging(&mut self, qh: &QueueHandle<Self>, intercept: bool) -> Result<()> {
@@ -391,12 +394,8 @@ impl State {
     }
 
     fn request_root_feedback(&mut self, qh: &QueueHandle<Self>, id: u64) -> Result<()> {
-        self.presentation
-            .as_ref()
-            .context("presentation feedback missing")?
-            .feedback(self.surface.as_ref().context("root missing")?, qh, id);
-        self.pending_feedback = true;
-        Ok(())
+        let surface = self.surface.as_ref().context("root missing")?.clone();
+        self.request_surface_feedback(qh, &surface, id)
     }
 
     #[allow(dead_code)] // Caller waits for candidate presentation before rollback.
@@ -438,12 +437,21 @@ impl State {
         surface: &wl_surface::WlSurface,
         frame_id: u64,
     ) -> Result<()> {
-        self.presentation
+        let presentation = self
+            .presentation
             .as_ref()
-            .context("presentation feedback missing")?
-            .feedback(surface, qh, frame_id);
+            .context("presentation feedback missing")?;
+        self.feedback_tracker.register(frame_id)?;
+        presentation.feedback(surface, qh, frame_id);
         self.pending_feedback = true;
         Ok(())
+    }
+
+    #[allow(dead_code)] // A failed candidate must not retain readiness authority.
+    pub fn cancel_frame_feedback(&mut self, id: u64) -> bool {
+        let cancelled = self.feedback_tracker.cancel(id);
+        self.pending_feedback = self.feedback_tracker.has_active();
+        cancelled
     }
 
     pub fn inject_if_ready(&mut self) {
@@ -792,17 +800,27 @@ impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, u64> for State {
     ) {
         match event {
             wp_presentation_feedback::Event::Presented { .. } => {
+                if state.feedback_tracker.complete(*frame_id, true).is_none() {
+                    state.closed = true;
+                    return;
+                }
                 state.presented += 1;
                 // Diagnostic histories stay bounded even for a high-rate source.
                 if state.presented_frame_ids.len() < 256 {
                     state.presented_frame_ids.push(*frame_id);
                 }
-                state.pending_feedback = false;
+                state.pending_feedback = state.feedback_tracker.has_active();
             }
             wp_presentation_feedback::Event::Discarded => {
-                state.discarded += 1;
-                state.pending_feedback = false;
-                state.dirty = true;
+                match state.feedback_tracker.complete(*frame_id, false) {
+                    Some(Completion::Discarded) => {
+                        state.discarded += 1;
+                        state.dirty = true;
+                    }
+                    Some(Completion::CancelledDiscarded) => {}
+                    _ => state.closed = true,
+                }
+                state.pending_feedback = state.feedback_tracker.has_active();
             }
             _ => {}
         }
