@@ -16,8 +16,6 @@ import subprocess
 import tempfile
 import time
 
-from PIL import Image, ImageDraw
-
 from benchmark_video import benchmark
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,13 +71,30 @@ class Session:
 
         def sockets():
             assert self.process.poll() is None, self.diagnostics()
-            ipc = list(runtime.glob("sway-ipc.*.sock"))
+            ipc = [p for p in runtime.glob("sway-ipc.*.sock") if p.is_socket()]
             wayland = [p for p in runtime.glob("wayland-*") if p.is_socket()]
             return (ipc[0], wayland[0]) if ipc and wayland else None
 
         ipc, wayland = wait_for(sockets, "private compositor sockets")
         self.env.update(SWAYSOCK=str(ipc), WAYLAND_DISPLAY=wayland.name)
-        wait_for(lambda: len(self.outputs()) == 2, "two headless outputs")
+        last_error = "none"
+
+        def ready():
+            nonlocal last_error
+            assert self.process.poll() is None, "private compositor exited during startup"
+            try:
+                return len(self.outputs()) == 2
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                # A bound socket can precede a listening/servicing IPC server. Only
+                # startup queries retry; runtime IPC commands must still fail.
+                last_error = f"{error}\nstdout: {error.stdout}\nstderr: {error.stderr}"[-4000:]
+                assert self.process.poll() is None, "private compositor exited during startup"
+                return False
+
+        try:
+            wait_for(ready, "two headless outputs")
+        except AssertionError as error:
+            raise AssertionError(f"{error}\nLast startup IPC error: {last_error}\n{self.diagnostics()}") from error
 
     def ipc(self, command, kind="command"):
         result = subprocess.run(["swaymsg", "--socket", self.env["SWAYSOCK"],
@@ -127,6 +142,8 @@ class Session:
         return True
 
     def capture(self, output):
+        from PIL import Image
+
         path = self.directory / f"{output}.png"
         result = subprocess.run(["grim", "-s", "1", "-o", output, str(path)],
                                 env=self.env, capture_output=True, timeout=5)
@@ -176,6 +193,8 @@ class Session:
 
 
 def main():
+    from PIL import Image, ImageDraw
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/openwall")
     parser.add_argument("--sway", default="sway")
