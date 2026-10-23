@@ -120,12 +120,14 @@ fn execute() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(
-                        &serde_json::json!({"title":video.file_stem().unwrap_or_default().to_string_lossy(), "kind":"video", "width":0, "height":0, "layers":0, "unsupported":[], "metadata":"dimensions will be negotiated by the native decoder"})
+                        &serde_json::json!({"schema_version":openwall_core::inspection::SCHEMA_VERSION,"title":video.file_stem().unwrap_or_default().to_string_lossy(), "kind":"video", "width":0, "height":0, "layers":0,"packed_entries":0, "unsupported":[], "metadata":"dimensions will be negotiated by the native decoder"})
                     )?
                 );
             } else {
                 let scene = Scene::load(path)?;
-                println!("{}", serde_json::to_string_pretty(&scene.report)?);
+                let mut report = serde_json::to_value(&scene.report)?;
+                report["schema_version"] = openwall_core::inspection::SCHEMA_VERSION.into();
+                println!("{}", serde_json::to_string_pretty(&report)?);
             }
         }
         Command::Render {

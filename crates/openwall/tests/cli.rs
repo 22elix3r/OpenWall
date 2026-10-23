@@ -20,9 +20,42 @@ fn packed_scene_is_inspected_from_a_separate_process() {
         String::from_utf8_lossy(&result.stderr)
     );
     let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(
+        report["schema_version"],
+        openwall_core::inspection::SCHEMA_VERSION
+    );
+    assert!(openwall_core::inspection::Inspection::from_json(&result.stdout).is_ok());
     assert_eq!(report["layers"], 3);
     assert_eq!(report["packed_entries"], 10);
     assert_eq!(report["unsupported"], serde_json::json!([]));
+}
+
+#[test]
+fn video_inspection_reports_versioned_deferred_metadata_without_decoding() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("undecoded-original.webm");
+    std::fs::write(&path, b"inspection does not decode this fixture").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_openwall"))
+        .arg("inspect")
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let inspection = openwall_core::inspection::Inspection::from_json(&result.stdout).unwrap();
+    assert_eq!(inspection.report.kind, "video");
+    assert_eq!(
+        (
+            inspection.report.width,
+            inspection.report.height,
+            inspection.report.layers,
+            inspection.report.packed_entries
+        ),
+        (0, 0, 0, 0)
+    );
 }
 
 #[test]
