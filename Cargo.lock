@@ -2275,7 +2275,9 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "openwall-core",
+ "rustix 1.1.5",
  "serde_json",
+ "tempfile",
  "url",
 ]
 

@@ -9,6 +9,10 @@
 - Opt-in Vulkan/Metal output comparison with original reference artwork.
 - GPU checks for layer position, rotation, and alpha blending in linear light.
 - Qt QML startup via `openwall-ui --check` with nonzero exit on root creation failure.
+- Bounded GUI queries: output overflow, noisy diagnostics, hung workers, early pipe
+  closure, inherited descendant pipes, process reaping, query admission limits and shutdown.
+- Offscreen GUI startup/exit with a deliberately hung discovery worker, requiring
+  cancellation and no remaining running query process (`scripts/test_gui_queries.py`).
 - Linux/macOS CI build, tests and Clippy. Hosted software Vulkan is correctness evidence only.
 
 Regenerate original samples with `python3 scripts/generate_samples.py`. Generation must

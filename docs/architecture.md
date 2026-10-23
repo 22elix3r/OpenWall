@@ -78,6 +78,21 @@ loads downloaded QML. Worker logs are continuously drained and capped at 16 KiB 
 prevent pipe backpressure. Generation checks prevent stale inspection results replacing
 a newer selection. The current GUI owns its workers and stops them on exit.
 
+GUI inspection and display discovery use finite process queries on Linux/macOS:
+10-second and 5-second deadlines respectively, at most 64 KiB of complete stdout and
+a 16 KiB stderr tail. Nonblocking reads/polling drain both pipes without detached
+reader threads; a continuously noisy pipe cannot starve the deadline or the other pipe.
+An application-owned query scope allows at most eight jobs, reclaims completed thread
+handles, and cancels/joins active jobs before the Qt engine is destroyed.
+
+Each query starts a new process group. The sole waiter observes exit with `waitid`
+and `WNOWAIT`, preserving the leader's PID until group termination and final reaping.
+This prevents signaling a reused numeric process-group ID after early parent exit,
+and bounds queries when ordinary descendants retain inherited pipes. GUI shutdown
+also terminates active query groups. This is lifecycle management, not an OS content
+sandbox or the future persistent manager's worker supervisor. Normal wallpaper
+playback remains managed separately from these short-lived queries.
+
 macOS display discovery runs a separate windowless winit/AppKit main-thread event loop.
 Enumeration reports native display identifiers and physical geometry; Apply resolves
 the selected identifier against the current monitor list. Ambiguous human-readable
