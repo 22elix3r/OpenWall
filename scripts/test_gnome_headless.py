@@ -21,8 +21,9 @@ import time
 from xml.sax.saxutils import escape
 
 from gi.repository import Gio, GLib
+from PIL import Image, ImageDraw
 
-from test_wayland_headless import COLORS, ROOT, Image, ImageDraw, wait_for
+from test_wayland_headless import COLORS, ROOT, wait_for
 
 
 def evaluate(bus, code):
