@@ -52,6 +52,7 @@ pub struct BackendRust {
     child: Option<Worker>,
     previews: Vec<Worker>,
     generation: u64,
+    inspection: Option<crate::query::Cancellation>,
 }
 
 impl Default for BackendRust {
@@ -72,6 +73,7 @@ impl Default for BackendRust {
             child: None,
             previews: Vec::new(),
             generation: 0,
+            inspection: None,
         }
     }
 }
@@ -86,12 +88,27 @@ fn player() -> PathBuf {
         })
 }
 
+impl BackendRust {
+    fn cancel_inspection(&mut self) {
+        if let Some(cancellation) = self.inspection.take() {
+            cancellation.cancel();
+        }
+    }
+}
+
+impl Drop for BackendRust {
+    fn drop(&mut self) {
+        self.cancel_inspection();
+    }
+}
+
 impl ffi::Backend {
     fn message(mut self: Pin<&mut Self>, message: impl AsRef<str>) {
         self.as_mut().set_status(QString::from(message.as_ref()));
     }
 
     pub fn sample(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().cancel_inspection();
         self.as_mut().rust_mut().generation += 1;
         self.as_mut().set_busy(false);
         self.as_mut().set_title(QString::from("Aurora Harbor"));
@@ -119,15 +136,19 @@ impl ffi::Backend {
                 return;
             }
         };
+        self.as_mut().rust_mut().cancel_inspection();
         self.as_mut().rust_mut().generation += 1;
         let generation = self.rust().generation;
         self.as_mut().set_busy(true);
         self.as_mut().message("Reading wallpaper…");
+        let cancellation = crate::query::Cancellation::default();
+        self.as_mut().rust_mut().inspection = Some(cancellation.clone());
         let qt = self.qt_thread();
         let launched = crate::query::spawn(move || {
-            let result = crate::query::run(
+            let result = crate::query::run_cancellable(
                 Command::new(player()).arg("inspect").arg(&path),
                 std::time::Duration::from_secs(10),
+                &cancellation,
             )
             .map_err(|error| format!("Could not read wallpaper: {error}"))
             .and_then(|output| {
@@ -143,13 +164,14 @@ impl ffi::Backend {
                     .map(|inspection| inspection.report)
                     .map_err(|error| format!("Could not read wallpaper: {error}"))
             });
-            if crate::query::is_closing() {
+            if crate::query::is_closing() || cancellation.is_cancelled() {
                 return;
             }
             let _ = qt.queue(move |mut object| {
                 if object.rust().generation != generation {
                     return;
                 }
+                object.as_mut().rust_mut().inspection = None;
                 object.as_mut().set_busy(false);
                 match result {
                     Ok(report) => {
@@ -200,6 +222,7 @@ impl ffi::Backend {
             });
         });
         if let Err(error) = launched {
+            self.as_mut().rust_mut().cancel_inspection();
             self.as_mut().set_busy(false);
             self.message(format!("Could not read wallpaper: {error}"));
         }
