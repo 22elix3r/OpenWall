@@ -7,6 +7,7 @@ pub mod assets;
 pub mod inspection;
 pub mod media;
 pub mod scene;
+pub mod thumbnail;
 
 pub use assets::Assets;
 pub use scene::{CompatibilityReport, Layer, Scene};

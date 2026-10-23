@@ -53,6 +53,7 @@ pub struct BackendRust {
     previews: Vec<Worker>,
     generation: u64,
     inspection: Option<crate::query::Cancellation>,
+    thumbnail: Option<crate::thumbnail::Thumbnail>,
 }
 
 impl Default for BackendRust {
@@ -74,6 +75,7 @@ impl Default for BackendRust {
             previews: Vec::new(),
             generation: 0,
             inspection: None,
+            thumbnail: None,
         }
     }
 }
@@ -121,6 +123,7 @@ impl ffi::Backend {
             .set_details(QString::from("1280 × 720  ·  Original scene  ·  CC0"));
         self.as_mut()
             .set_preview_url(QString::from("qrc:/openwall/aurora.png"));
+        self.as_mut().rust_mut().thumbnail = None;
         self.message("Ready");
     }
 
@@ -164,6 +167,10 @@ impl ffi::Backend {
                     .map(|inspection| inspection.report)
                     .map_err(|error| format!("Could not read wallpaper: {error}"))
             });
+            let thumbnail = result
+                .as_ref()
+                .ok()
+                .and_then(|_| crate::thumbnail::load(&player(), &path, &cancellation));
             if crate::query::is_closing() || cancellation.is_cancelled() {
                 return;
             }
@@ -194,22 +201,12 @@ impl ffi::Backend {
                             )
                         };
                         object.as_mut().set_details(QString::from(details.as_str()));
-                        let preview = if path.extension().is_some_and(|x| {
-                            matches!(x.to_str(), Some("png" | "jpg" | "jpeg" | "webp"))
-                        }) {
-                            Some(path.clone())
-                        } else {
-                            path.parent()
-                                .map(|x| x.join("preview.png"))
-                                .filter(|x| x.exists())
-                        };
-                        let preview = preview
-                            .and_then(|x| url::Url::from_file_path(x).ok())
-                            .map(|x| x.to_string())
+                        let preview = thumbnail
+                            .as_ref()
+                            .map(|thumbnail| thumbnail.url.as_str())
                             .unwrap_or_default();
-                        object
-                            .as_mut()
-                            .set_preview_url(QString::from(preview.as_str()));
+                        object.as_mut().set_preview_url(QString::from(preview));
+                        object.as_mut().rust_mut().thumbnail = thumbnail;
                         let unsupported = !report.unsupported.is_empty();
                         object.message(if unsupported {
                             "This wallpaper uses features that are not supported yet."

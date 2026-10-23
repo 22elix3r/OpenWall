@@ -97,6 +97,20 @@ Video dimensions can remain zero until native decode. The GUI's busy state clear
 these errors. This is the current inspector response contract, not the future manager's
 versioned request/response protocol. CLI inspection retains full compatibility details;
 the GUI rejects responses exceeding its 64 KiB query/report budget.
+After successful inspection, a second cancellable worker query generates a static PNG
+thumbnail with a five-second deadline. Raster input is checked against the 8192-pixel
+axis limit and a 64 MiB RGBA output budget before decoding/conversion; decoding retains
+its separate allocation limits. The worker downsizes without enlargement, preserving
+aspect ratio, to at most 512 pixels per side and caps encoded output at 2 MiB. Images
+and TEX use their selected file; project/scene/video entries use only a bounded loose
+`preview.png` under that directory, without loading a neighboring package or running
+wallpaper/video code. Missing or rejected previews leave a valid selection available.
+The GUI receives only the generated PNG from a temporary directory created with owner-only
+permissions on Linux/macOS. It checks output size, PNG header and dimensions, retains
+that directory while displayed, and removes it on release/normal shutdown. It does not
+pass original images or untrusted sidecar paths to Qt. This reduces GUI decoder exposure;
+it does not add an operating-system sandbox, hostile same-user isolation or crash cleanup.
+
 Titles, details and worker diagnostics are rendered as plain text; imported strings
 cannot opt those labels into Qt's rich-text/inline-image behavior.
 

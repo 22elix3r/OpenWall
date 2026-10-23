@@ -98,6 +98,7 @@ buffer caps are printed in worker diagnostics; zero-copy is not assumed.
 cargo run -p openwall -- doctor
 cargo run -p openwall -- outputs
 cargo run -p openwall -- inspect samples/aurora-packed/project.json
+cargo run -p openwall -- thumbnail samples/aurora --output /tmp/aurora-thumbnail.png
 cargo run -p openwall -- render samples/aurora/project.json --output /tmp/aurora.png
 cargo run -p openwall -- preview samples/aurora/project.json
 cargo run -p openwall -- apply samples/aurora/project.json --seconds 10
@@ -117,6 +118,12 @@ source tree; standalone installers and application bundles have not been produce
 Closing the current GUI stops its workers. A persistent background manager is the next
 runtime milestone. Ctrl+C removes CLI wallpaper surfaces; OpenWall does not rewrite your
 desktop's wallpaper settings or terminate another wallpaper application.
+
+The GUI generates static thumbnails in an owned worker and loads only its bounded PNG
+output, never an original image or neighboring preview directly through Qt. Thumbnail
+images are at most 512 pixels per side; scene/video entries use a loose `preview.png`
+when available. Missing or invalid previews do not block selection. The CLI `thumbnail`
+command uses no window/GPU and refuses to overwrite an existing output file.
 
 `inspect` reports unsupported scene features. Preview/render refuse them by default;
 `--allow-partial` explicitly permits a partial preview. Applying an unsupported scene is
