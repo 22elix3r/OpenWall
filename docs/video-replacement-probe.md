@@ -110,7 +110,7 @@ Tests observe all twelve previous-source markers and a full loop during a seven-
 candidate hold, moving candidate/restored pixels, sampled transitions matching complete
 old/new fixture patch sets, exact retained rollback PTS, presentation-gated clock events,
 six witness button events and an unchanged second output. Sampled channel errors are
-zero for desktop Mesa and at most one for NVIDIA/GLES in the expanded qualification. All 26
+zero for desktop Mesa and at most one for NVIDIA/GLES in the expanded qualification. All
 submitted consumer fences retire, with measured peak one and zero cleanup finishes.
 Abort and malformed candidate cases retain visibly moving previous video. Invalid
 commands/order, SIGINT, input interception, SIGKILL and compositor loss exercise cleanup.
@@ -128,6 +128,23 @@ witness button events and preserves the second output. The restoration negative 
 receives a real discard and exits with an error and no successful JSON report. Normal
 publication/rollback/finalization and the existing cleanup cases continue to pass.
 
+`--reprepare-after-finalize PATH` exercises the next preparation after committing the
+first candidate. The tree recreates the retired branch hidden, and the same native EGL
+session creates a new window/source there. The committed video keeps playing while the
+next source prerolls paused. `abort\n`, a missing file or malformed media releases only
+that new candidate; the committed source continues under the same desktop root/context.
+Occupied/invalid slot recreation and removal of the submitted branch are rejected.
+
+These paths pass Mesa desktop GL/GLES and NVIDIA desktop GL. Tests hold the next paused
+candidate while all twelve committed-video markers and another EOS loop appear, then
+abort it and check continued moving pixels. The next source receives only one preroll
+sample and its clock never starts. Frame generation IDs distinguish it from the retired
+source formerly using that slot. Three native windows are created/destroyed cumulatively,
+with at most two live at a time and one application context/display owner. Midpoint
+cleanup has three creations/two destructions without terminating that owner. Missing
+and malformed next candidates also retain moving committed video. This qualifies a
+second preparation and retirement, not publication/commit of arbitrary repeated sources.
+
 This is a bounded private diagnostic with fixed published geometry, logical-size SDR
 buffers and one transaction. It is not general worker IPC, production Apply or a content
 sandbox. Injected media-bus errors after confirmed candidate readiness now have automatic
@@ -135,7 +152,7 @@ rollback coverage, including an error before candidate readiness is accepted. Re
 post-publication decoder failures, lost presentation feedback,
 control-connection loss and rollback
 failure still need qualification. A decoder/worker process crash loses both in-process
-sources; manager restart/static fallback remains necessary. Repeated candidates,
+sources; manager restart/static fallback remains necessary. Repeated publication/commit,
 replacing a committed candidate, device loss, dynamic output geometry, multi-output visual
 atomicity, GNOME/Plasma/macOS roles, physical scanout and sustained resource/energy budgets
 remain open. Screencopy samples check fixture patch interiors, not every compositor frame.

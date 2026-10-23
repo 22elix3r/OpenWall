@@ -50,6 +50,9 @@ pub struct Tree {
     transparent: WlBuffer,
     size: (i32, i32),
     active: Option<usize>,
+    compositor: WlCompositor,
+    subs: WlSubcompositor,
+    views: WpViewporter,
 }
 
 impl Tree {
@@ -89,25 +92,8 @@ impl Tree {
         let pool = shm.create_pool(file.as_fd(), 4, qh, ());
         let transparent = pool.create_buffer(0, 1, 1, 4, wl_shm::Format::Argb8888, qh, ());
         pool.destroy();
-        let branches = std::array::from_fn(|_| {
-            let container = compositor.create_surface(qh, ());
-            let container_role = subs.get_subsurface(&container, root, qh, ());
-            container_role.set_sync();
-            let surface = compositor.create_surface(qh, ());
-            let role = subs.get_subsurface(&surface, &container, qh, ());
-            role.set_sync();
-            let empty = compositor.create_region(qh, ());
-            container.set_input_region(Some(&empty));
-            surface.set_input_region(Some(&empty));
-            empty.destroy();
-            Some(Branch {
-                viewport: views.get_viewport(&container, qh, ()),
-                surface,
-                role,
-                container,
-                container_role,
-            })
-        });
+        let branches =
+            std::array::from_fn(|_| Some(Self::make_branch(qh, root, compositor, subs, views)));
         let viewport = views.get_viewport(root, qh, ());
         viewport.set_destination(width as i32, height as i32);
         Ok(Self {
@@ -117,7 +103,67 @@ impl Tree {
             transparent,
             size: (width as i32, height as i32),
             active: None,
+            compositor: compositor.clone(),
+            subs: subs.clone(),
+            views: views.clone(),
         })
+    }
+
+    fn make_branch<D>(
+        qh: &QueueHandle<D>,
+        root: &WlSurface,
+        compositor: &WlCompositor,
+        subs: &WlSubcompositor,
+        views: &WpViewporter,
+    ) -> Branch
+    where
+        D: Dispatch<WlSurface, ()>
+            + Dispatch<WlSubsurface, ()>
+            + Dispatch<WlRegion, ()>
+            + Dispatch<WpViewport, ()>
+            + 'static,
+    {
+        let container = compositor.create_surface(qh, ());
+        let container_role = subs.get_subsurface(&container, root, qh, ());
+        container_role.set_sync();
+        let surface = compositor.create_surface(qh, ());
+        let role = subs.get_subsurface(&surface, &container, qh, ());
+        role.set_sync();
+        let empty = compositor.create_region(qh, ());
+        container.set_input_region(Some(&empty));
+        surface.set_input_region(Some(&empty));
+        empty.destroy();
+        Branch {
+            viewport: views.get_viewport(&container, qh, ()),
+            surface,
+            role,
+            container,
+            container_role,
+        }
+    }
+
+    /// Recreate a retired slot, initially hidden, without changing the root or
+    /// active mapping. A native window may then exclusively borrow the new leaf.
+    pub fn recreate<D>(&mut self, index: usize, qh: &QueueHandle<D>) -> Result<()>
+    where
+        D: Dispatch<WlSurface, ()>
+            + Dispatch<WlSubsurface, ()>
+            + Dispatch<WlRegion, ()>
+            + Dispatch<WpViewport, ()>
+            + 'static,
+    {
+        ensure!(
+            self.branches.get(index).is_some_and(Option::is_none),
+            "presentation branch slot is occupied or invalid"
+        );
+        self.branches[index] = Some(Self::make_branch(
+            qh,
+            &self.root,
+            &self.compositor,
+            &self.subs,
+            &self.views,
+        ));
+        Ok(())
     }
 
     fn branch(&self, index: usize) -> Result<&Branch> {
