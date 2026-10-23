@@ -2,7 +2,7 @@
 use glow::HasContext;
 use khronos_egl as egl;
 
-#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum Api {
     #[default]
     Gles,
@@ -10,7 +10,12 @@ pub enum Api {
 }
 
 impl Api {
-    pub fn select_default_draw_buffer(self, gl: &glow::Context) {
+    /// Select the back buffer for a current native window framebuffer.
+    ///
+    /// # Safety
+    /// `gl` must describe the current context on this thread, with its default
+    /// window framebuffer bound and the selected GL API matching this value.
+    pub unsafe fn select_default_draw_buffer(self, gl: &glow::Context) {
         // SAFETY: diagnostics call this with the owned context current and its
         // default window framebuffer bound. Surfaceless initialization can leave
         // GL_NONE selected; window swaps need writes to the back buffer.

@@ -20,9 +20,17 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Linux desktop dependencies
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld pkg-config libwayland-dev libxkbcommon-dev libvulkan1 mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-gl sway grim ffmpeg python3-pil qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-wayland qml-qt6 qml6-module-qtwayland-compositor qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-templates qml6-module-qtqml-workerscript
+          # Keep Ubuntu's signed archive/keyring; avoid the slow Azure HTTP mirror.
+          for openwall_apt_source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            if [ -f "$openwall_apt_source" ]; then
+              sudo sed -i -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$openwall_apt_source"
+            fi
+          done
+          openwall_apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=60)
+          sudo apt-get "${openwall_apt_options[@]}" update
+          sudo apt-get "${openwall_apt_options[@]}" install -y clang lld pkg-config libwayland-dev libxkbcommon-dev libvulkan1 mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-gl sway grim ffmpeg python3-pil qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-wayland qml-qt6 qml6-module-qtwayland-compositor qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-templates qml6-module-qtqml-workerscript
       - name: macOS desktop dependencies
         if: runner.os == 'macOS'
         run: |
@@ -45,12 +53,14 @@ jobs:
         run: |
           python3 -m py_compile scripts/test_wayland_headless.py scripts/test_plasma_bridge.py scripts/test_gnome_headless.py scripts/benchmark_video.py scripts/benchmark_native_gl_video.py scripts/test_video_transfer_probe.py scripts/video_color_fixtures.py scripts/private_gpu.py scripts/test_video_color.py scripts/test_owned_gl_sequence.py scripts/test_owned_egl_wayland.py scripts/test_shared_egl_session.py scripts/test_staged_egl.py scripts/test_nested_egl.py scripts/test_nvidia_gl_interop.py scripts/test_native_gl_video.py scripts/test_shared_video_outputs.py scripts/test_video_replacement.py scripts/build_wayland_runtime.py scripts/test_wayland_runtime.py
           node --input-type=module --check < integrations/gnome/presentation.js
-      - name: Measurement harness process tests
+      - name: Integration harness process tests
         run: python3 -m unittest discover -s scripts/tests -v
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Optional shared-GL probe compile checks
         if: runner.os == 'Linux'
-        run: cargo clippy -p openwall --examples --features video-gl-probe --locked -- -D warnings
+        run: |
+          cargo clippy -p openwall --lib --no-default-features --features native-egl --locked -- -D warnings
+          cargo clippy -p openwall --examples --features video-gl-probe --locked -- -D warnings
       - run: cargo build --workspace --locked
       - name: Save compiled dependencies before native integration tests
         if: steps.rust-cache.outputs.cache-hit != 'true'

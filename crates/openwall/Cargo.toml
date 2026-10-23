@@ -9,7 +9,8 @@ description = "Open-source desktop wallpapers and Wallpaper Engine compatibility
 [features]
 default = ["video"]
 video = ["dep:gstreamer", "dep:gstreamer-video", "dep:libloading"]
-video-gl-probe = ["video", "dep:gstreamer-app", "dep:gstreamer-gl", "dep:gstreamer-gl-egl", "dep:khronos-egl", "dep:glow", "dep:wayland-egl"]
+native-egl = ["dep:khronos-egl", "dep:glow", "dep:wayland-egl"]
+video-gl-probe = ["video", "native-egl", "dep:gstreamer-app", "dep:gstreamer-gl", "dep:gstreamer-gl-egl"]
 
 [dependencies]
 openwall-core.workspace = true

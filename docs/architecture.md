@@ -82,10 +82,26 @@ a newer selection. The current GUI owns its workers and stops them on exit.
 
 M1 will replace GUI-owned playback with a background Rust manager. It will own SQLite
 state and output assignments, expose bounded/versioned same-user Unix-socket messages,
-and pass read-only resources to workers. Prepare a candidate worker, await first-frame
-readiness, then commit an assignment; failed candidates leave the previous wallpaper
-running. Combine user/power/session/visibility pause reasons. Restart workers with
-backoff, then retain a static/previous fallback after the restart budget is exhausted.
+and pass read-only resources to workers. The native video experiments establish a more
+specific presentation boundary: a persistent worker owns each desktop root and prepares
+candidate sources below unmapped synchronized containers. Independent background roots
+cannot supply a deterministic replacement order. The existing source remains active
+until publication and retained for rollback until the manager finalizes the assignment.
+
+The manager must publish a prepared candidate, await actual presentation on its target
+outputs, persist the assignment, then finalize resource retirement. Persistence failure,
+lost control or a transaction deadline must roll back while the previous source is
+retained. These are integration requirements, not implemented IPC/manager behavior.
+The [two-source diagnostic](video-replacement-probe.md) currently establishes explicit
+publication/rollback and pre-publication media failure handling in one process. Automatic
+post-publication recovery and repeated assignments remain open. A process crash still
+loses that worker's sources; the manager needs bounded restart/backoff and a trusted
+static/previous fallback after its restart budget is exhausted. Combine
+user/power/session/adapter-visibility pause reasons independently of transaction state.
+
+The [native EGL runtime](native-egl-runtime.md) now supplies the reusable Linux display/
+context/window ownership boundary used by the conformance programs. It remains optional;
+normal production playback and non-Linux presenters do not silently switch backend.
 
 The current launcher does not implement that transaction or a restart policy. There is
 no stable external plugin ABI. GNOME/Plasma adapters must remain minimal trusted

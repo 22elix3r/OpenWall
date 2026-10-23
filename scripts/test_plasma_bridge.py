@@ -18,7 +18,9 @@ import tempfile
 import time
 from xml.sax.saxutils import escape
 
-from test_wayland_headless import COLORS, ROOT, Image, ImageDraw, Session, wait_for
+from PIL import Image, ImageDraw
+
+from test_wayland_headless import COLORS, ROOT, Session, wait_for
 
 PLUGIN = ROOT / "integrations/plasma/org.openwall.wallpaper"
 QML = ROOT / "scripts/qml"

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-#[path = "egl_window.rs"]
-mod egl_window;
-#[path = "../probe_support/gl_api.rs"]
-mod gl_api;
+#[path = "../probe_support/quadrant_painter.rs"]
+mod quadrant_painter;
+use openwall::native_egl::gl_api;
+use openwall::native_egl::window as egl_window;
+use quadrant_painter::Quadrants;
 #[path = "wayland.rs"]
 mod wayland;
 
@@ -104,12 +105,15 @@ pub fn run() -> Result<()> {
             let (width, height) = state.configured.context("layer configure missing")?;
             egl_window::validate_size(width, height)?;
             if window.is_none() {
-                window = Some(egl_window::Window::on_session(
-                    egl_window::Session::new(&conn, args.gl_api)?,
-                    state.surface.as_ref().context("native surface missing")?,
-                    width,
-                    height,
-                )?);
+                window = Some(unsafe {
+                    // SAFETY: The private State/tree retains this exclusive protocol surface and role until after its native window is dropped.
+                    egl_window::Window::on_session(
+                        egl_window::Session::new(&conn, args.gl_api)?,
+                        state.surface.as_ref().context("native surface missing")?,
+                        width,
+                        height,
+                    )
+                }?);
                 creations += 1;
             }
             state.request_feedback(&queue.handle())?;

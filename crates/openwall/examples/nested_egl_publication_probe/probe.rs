@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod control;
-#[path = "../owned_egl_wayland_probe/egl_window.rs"]
-#[allow(dead_code)] // The persistent root can report after its native window is gone.
-mod egl_window;
-#[path = "../probe_support/gl_api.rs"]
-mod gl_api;
+#[path = "../probe_support/quadrant_painter.rs"]
+mod quadrant_painter;
+use openwall::native_egl::gl_api;
+use openwall::native_egl::window as egl_window;
+use quadrant_painter::Quadrants;
 #[path = "../owned_egl_wayland_probe/wayland.rs"]
 mod wayland;
 #[path = "../probe_support/wayland_poll.rs"]
@@ -195,12 +195,15 @@ pub fn run() -> Result<()> {
         if phase == Phase::Staging && state.presented_frame_ids.contains(&0) {
             let (width, height) = state.configured.context("layer configure missing")?;
             if window.is_none() {
-                let native = egl_window::Window::on_session(
-                    session.clone(),
-                    state.render_surface()?,
-                    width,
-                    height,
-                )?;
+                let native = unsafe {
+                    // SAFETY: The private State/tree retains this exclusive protocol surface and role until after its native window is dropped.
+                    egl_window::Window::on_session(
+                        session.clone(),
+                        state.render_surface()?,
+                        width,
+                        height,
+                    )
+                }?;
                 native.disable_swap_throttle()?;
                 window = Some(native);
             }

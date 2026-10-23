@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::gl_api::Api;
+use super::ownership;
 use anyhow::{Context, Result, ensure};
 use glow::HasContext;
 use khronos_egl as egl;
@@ -36,10 +37,20 @@ pub struct Session {
     initial_window_draw_buffer: Cell<Option<i32>>,
     rgba_bits: Option<[i32; 4]>,
     _connection: Connection,
+    _ownership: ownership::Reservation,
 }
 
 impl Session {
     pub fn new(connection: &Connection, selected: Api) -> Result<Rc<Self>> {
+        if let Some(owner) = ownership::existing(connection) {
+            ensure!(
+                owner.selected == selected,
+                "Wayland connection already uses a different native GL API"
+            );
+            return Ok(owner);
+        }
+        ownership::check_api(selected)?;
+        let ownership = ownership::Reservation::claim(connection)?;
         // SAFETY: load the system ABI; its library handle outlives native resources.
         let api = unsafe {
             egl::DynamicInstance::<egl::EGL1_5>::load_required_from_filename("libEGL.so.1")
@@ -66,6 +77,7 @@ impl Session {
             initial_window_draw_buffer: Cell::new(None),
             rgba_bits: None,
             _connection: connection.clone(),
+            _ownership: ownership,
         };
         session.api.bind_api(selected.egl_api())?;
         let config = session
@@ -121,7 +133,16 @@ impl Session {
                     .map_or(std::ptr::null(), |function| function as *const _)
             })
         });
-        Ok(Rc::new(session))
+        let session = Rc::new(session);
+        ownership::remember(&session);
+        Ok(session)
+    }
+
+    pub(super) fn connection(&self) -> &Connection {
+        &self._connection
+    }
+    pub(super) fn selected_api(&self) -> Api {
+        self.selected
     }
 
     pub fn counts(&self) -> Rc<Counts> {
@@ -144,6 +165,10 @@ impl Session {
     }
 
     pub fn report(&self) -> Result<serde_json::Value> {
+        ensure!(
+            self.api.get_current_context() == self.context,
+            "native EGL report requires the owned context current on this thread"
+        );
         let gl = self.gl()?;
         // SAFETY: a window or surfaceless binding keeps this context current.
         Ok(unsafe {
@@ -158,7 +183,9 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.gl.take();
-        let _ = self.api.make_current(self.display, None, None, None);
+        if self.context.is_some() && self.api.get_current_context() == self.context {
+            let _ = self.api.make_current(self.display, None, None, None);
+        }
         if let Some(context) = self.context.take()
             && self.api.destroy_context(self.display, context).is_ok()
         {
@@ -183,7 +210,15 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn on_session(
+    pub fn api(&self) -> Api {
+        self.session.selected
+    }
+    /// Wrap one exclusively owned native child on the retained connection.
+    ///
+    /// # Safety
+    /// The protocol surface and its role must remain undestroyed until this
+    /// window is dropped. No other EGL window or buffer producer may own it.
+    pub unsafe fn on_session(
         session: Rc<Session>,
         surface: &WlSurface,
         width: u32,
@@ -252,47 +287,6 @@ impl Window {
             self.surface,
             self.session.context,
         )?;
-        Ok(())
-    }
-
-    #[allow(dead_code)] // Staged publication separates painting from submission.
-    pub fn draw(&mut self, width: u32, height: u32) -> Result<()> {
-        self.paint(width, height)?;
-        self.present()
-    }
-
-    pub fn paint(&self, width: u32, height: u32) -> Result<()> {
-        self.resize(width, height)?;
-        let gl = self.gl()?;
-        // SAFETY: only this thread uses the current context; dimensions are bounded.
-        unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            self.session.selected.select_default_draw_buffer(gl);
-            gl.viewport(0, 0, width as i32, height as i32);
-            gl.enable(glow::SCISSOR_TEST);
-            let left = width / 2;
-            let bottom = height / 2;
-            for (x, y, w, h, color) in [
-                (0, bottom, left, height - bottom, [220, 20, 30]),
-                (left, bottom, width - left, height - bottom, [20, 210, 40]),
-                (0, 0, left, bottom, [30, 60, 220]),
-                (left, 0, width - left, bottom, [230, 210, 20]),
-            ] {
-                gl.scissor(x as i32, y as i32, w as i32, h as i32);
-                gl.clear_color(
-                    color[0] as f32 / 255.,
-                    color[1] as f32 / 255.,
-                    color[2] as f32 / 255.,
-                    1.,
-                );
-                gl.clear(glow::COLOR_BUFFER_BIT);
-            }
-            gl.disable(glow::SCISSOR_TEST);
-            ensure!(
-                gl.get_error() == glow::NO_ERROR,
-                "owned Wayland GL draw failed"
-            );
-        }
         Ok(())
     }
 
@@ -385,9 +379,15 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
-        // Keep the shared context alive without a drawable before deleting this
-        // surface. Other windows can bind their own surface on their next draw.
-        let _ = self.session.surfaceless();
+        // Unbind only this drawable. Dropping an inactive window must preserve
+        // another window/connection's current context and pending GL work.
+        if self.surface.is_some()
+            && self.session.api.get_current_context() == self.session.context
+            && (self.session.api.get_current_surface(egl::DRAW) == self.surface
+                || self.session.api.get_current_surface(egl::READ) == self.surface)
+        {
+            let _ = self.session.surfaceless();
+        }
         if let Some(surface) = self.surface.take()
             && self
                 .session

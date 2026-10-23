@@ -3,11 +3,8 @@
 mod control;
 #[path = "../probe_support/decoder_trace.rs"]
 mod decoder_trace;
-#[path = "../owned_egl_wayland_probe/egl_window.rs"]
-#[allow(dead_code)] // Windows borrow the one session; static drawing is unused here.
-mod egl_window;
-#[path = "../probe_support/gl_api.rs"]
-mod gl_api;
+use openwall::native_egl::gl_api;
+use openwall::native_egl::window as egl_window;
 #[path = "../probe_support/gl_painter.rs"]
 mod gl_painter;
 #[path = "../native_gl_video_probe/media.rs"]
@@ -151,8 +148,10 @@ pub fn run() -> Result<()> {
     let counts = session.counts();
     let mut windows = [None, None];
     for (index, window) in windows.iter_mut().enumerate() {
-        let native =
-            egl_window::Window::on_session(session.clone(), tree.surface(index)?, size.0, size.1)?;
+        let native = unsafe {
+            // SAFETY: The private State/tree retains this exclusive protocol surface and role until after its native window is dropped.
+            egl_window::Window::on_session(session.clone(), tree.surface(index)?, size.0, size.1)
+        }?;
         native.disable_swap_throttle()?;
         *window = Some(native);
     }

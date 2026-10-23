@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-#[path = "../owned_egl_wayland_probe/egl_window.rs"]
-#[allow(dead_code)] // The video entry point also borrows the context/display handles.
-mod egl_window;
-#[path = "../probe_support/gl_api.rs"]
-mod gl_api;
+#[path = "../probe_support/quadrant_painter.rs"]
+mod quadrant_painter;
+use openwall::native_egl::gl_api;
+use openwall::native_egl::window as egl_window;
+use quadrant_painter::Quadrants;
 #[path = "../owned_egl_wayland_probe/wayland.rs"]
 #[allow(dead_code)] // Static and video diagnostics share the private protocol roots.
 mod wayland;
@@ -136,22 +136,54 @@ pub fn run() -> Result<()> {
         }
     }
     let session = egl_window::Session::new(&connection, args.gl_api)?;
+    let reused = egl_window::Session::new(&connection, args.gl_api)?;
+    ensure!(
+        std::rc::Rc::ptr_eq(&session, &reused),
+        "same connection did not reuse its owner"
+    );
+    drop(reused);
+    let other_api = match args.gl_api {
+        gl_api::Api::Desktop => gl_api::Api::Gles,
+        gl_api::Api::Gles => gl_api::Api::Desktop,
+    };
+    let conflict = egl_window::Session::new(&connection, other_api)
+        .err()
+        .context("conflicting API unexpectedly created a second display owner")?;
+    ensure!(
+        conflict.to_string().contains("different native GL API"),
+        "unexpected API conflict: {conflict}"
+    );
+    let foreign = connection.clone();
+    let selected = args.gl_api;
+    let cross_thread = std::thread::spawn(move || {
+        egl_window::Session::new(&foreign, selected)
+            .err()
+            .map(|error| error.to_string())
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("ownership check thread panicked"))?
+    .context("another thread unexpectedly created a duplicate display owner")?;
+    ensure!(
+        cross_thread.contains("already has a native EGL owner"),
+        "unexpected cross-thread failure: {cross_thread}"
+    );
     let counts = session.counts();
     let (width, height) = state.configured.context("first configure missing")?;
-    let mut first = Some(egl_window::Window::on_session(
-        session.clone(),
-        state.surface.as_ref().context("first surface missing")?,
-        width,
-        height,
-    )?);
+    let mut first = Some(unsafe {
+        // SAFETY: The private State/tree retains this exclusive protocol surface and role until after its native window is dropped.
+        egl_window::Window::on_session(
+            session.clone(),
+            state.surface.as_ref().context("first surface missing")?,
+            width,
+            height,
+        )
+    }?);
     let secondary = state.secondary.as_ref().context("second surface missing")?;
     let (width, height) = secondary.configured.context("second configure missing")?;
-    let mut second = Some(egl_window::Window::on_session(
-        session.clone(),
-        &secondary.surface,
-        width,
-        height,
-    )?);
+    let mut second = Some(unsafe {
+        // SAFETY: The private State/tree retains this exclusive protocol surface and role until after its native window is dropped.
+        egl_window::Window::on_session(session.clone(), &secondary.surface, width, height)
+    }?);
     ensure!(
         first.as_ref().context("first window missing")?.handles()?
             == second
@@ -161,6 +193,27 @@ pub fn run() -> Result<()> {
         "private windows did not retain the same EGL display/context"
     );
     let marker = Marker::new(session.gl()?)?;
+    let independent_connection = wayland_client::Connection::connect_to_env()?;
+    let mixed_api = egl_window::Session::new(&independent_connection, other_api)
+        .err()
+        .context("same thread unexpectedly mixed native GL APIs")?;
+    ensure!(
+        mixed_api
+            .to_string()
+            .contains("thread already owns a different GL API"),
+        "unexpected mixed API error: {mixed_api}"
+    );
+    let independent = egl_window::Session::new(&independent_connection, args.gl_api)?;
+    let independent_counts = independent.counts();
+    ensure!(
+        independent.handles()?.0 != session.handles()?.0,
+        "independent connections share an EGLDisplay"
+    );
+    session.surfaceless()?;
+    drop(independent);
+    session.report()?; // Its current binding must survive the other owner's Drop.
+    marker.check()?;
+    let independent_lifecycle = independent_counts.snapshot();
     let mut ready = false;
     let mut removed_first = false;
     let mut survivor_presented = false;
@@ -337,9 +390,20 @@ pub fn run() -> Result<()> {
         "surface_destructions":2,"context_destructions":1,"display_terminations":1}),
         "shared EGL destruction counts incorrect: {lifecycle}"
     );
+    // Releasing the final owner must release its process-wide reservation too.
+    let recreated = egl_window::Session::new(&connection, args.gl_api)?;
+    let recreated_counts = recreated.counts();
+    let marker = Marker::new(recreated.gl()?)?;
+    marker.check()?;
+    drop(marker);
+    drop(recreated);
+    let recreated_lifecycle = recreated_counts.snapshot();
     let report = serde_json::json!({"schema_version":1,"status":"passed","scope":"two_private_outputs_one_egl_session",
         "gl":gl,"first_presented":state.presented,"second_presented":second_presented,
         "first_removed":removed_first,"survivor_presented":survivor_presented,"texture_survived_no_windows":true,
+        "session_reused":true,"conflicting_api_rejected":true,"cross_thread_rejected":true,
+        "mixed_thread_api_rejected":true,"independent_connection_lifecycle":independent_lifecycle,
+        "recreated_owner_lifecycle":recreated_lifecycle,
         "witness_button_events":state.witness_buttons,"egl_lifecycle":lifecycle,"geometry_refreshes":geometry_refreshes});
     drop(state);
     connection.flush()?;

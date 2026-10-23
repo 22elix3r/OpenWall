@@ -107,6 +107,10 @@ def main():
             assert ("NVIDIA" in report["gl"]["vendor"] if args.nvidia else "llvmpipe" in report["gl"]["renderer"].lower()), report
             assert report["egl_lifecycle"] == {"display_initializations": 1, "context_creations": 1, "surface_creations": 2,
                                                "surface_destructions": 2, "context_destructions": 1, "display_terminations": 1}, report
+            assert report["session_reused"] and report["conflicting_api_rejected"] and report["cross_thread_rejected"], report
+            assert report["recreated_owner_lifecycle"] == {"display_initializations":1,"context_creations":1,"surface_creations":0,
+                                                          "surface_destructions":0,"context_destructions":1,"display_terminations":1}, report
+            assert report["mixed_thread_api_rejected"] and report["independent_connection_lifecycle"] == report["recreated_owner_lifecycle"], report
             if args.nvidia:
                 compositor_log = session.text(session.log)
                 assert "NVIDIA" in compositor_log and str(node) in compositor_log, compositor_log[-16_384:]
@@ -146,6 +150,8 @@ def main():
                       "idle_cpu_seconds_over_one_second": idle_cpu,
                       "geometry_refreshes": report["geometry_refreshes"],
                       "checks": ["both compositor outputs", "presentation feedback", "real click-through",
+                                 "same-connection owner reuse", "conflicting API/cross-thread rejection",
+                                 "independent owner preserves current context", "owner recreation after final release",
                                  "surviving output after first removal", "scale/rotation after removal",
                                  "GL resource retained with no windows", "single display termination", "idle sleep",
                                  "SIGINT", "SIGKILL", "compositor loss"]}))

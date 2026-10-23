@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #[path = "../probe_support/decoder_trace.rs"]
 mod decoder_trace;
-#[path = "../probe_support/gl_api.rs"]
-mod gl_api;
 use decoder_trace::watch_decoder_buffers;
+use openwall::native_egl::gl_api;
 #[path = "../probe_support/gl_painter.rs"]
 mod gl_painter;
 #[path = "../probe_support/shared_gl.rs"]
