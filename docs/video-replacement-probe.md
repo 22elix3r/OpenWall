@@ -79,6 +79,23 @@ tests check early error recovery, the exact retained previous PTS, four witness 
 events, candidate retirement and continued previous playback. Which cancelled terminal
 event occurs depends on compositor timing; both are valid.
 
+An active candidate discard now schedules the same restoration instead of terminating
+both sources. The discarded identity must belong to the most recent candidate submission
+and occur while publication/candidate playback still retains a previous source. Discards
+of the previous source, restoration or finalized source remain errors; they cannot be
+reported as a successful rollback. Primary discard identity history is bounded at 256
+entries, above this finite diagnostic's 240-submission cap.
+
+`--discard-candidate-submission` forces a real compositor discard on an application-owned
+synchronized container: a buffer commit is superseded by an unmap before their parent
+commit. Its feedback identity is registered normally and terminal delivery uses the normal
+Wayland dispatcher. The old branch stays mapped. This deliberately targets container
+feedback for the fault control; normal frame acknowledgment still targets the native EGL
+child. `--discard-restoration-submission` applies the same control to restoration and
+must fail. Neither control manually attaches buffers to EGL-owned children or fakes a
+terminal protocol event. Repeated native swaps while hidden are not a portable way to
+force a discard: NVIDIA can block awaiting buffer availability/release.
+
 ## Evidence and remaining gates
 
 Private Ubuntu 26.04/Sway 1.11/Mesa 26.0.8/GStreamer 1.28.2 passes desktop GL and GLES.
@@ -104,11 +121,18 @@ run retires the previous source, observes all twelve candidate markers and anoth
 loop, and requires every later submitted frame to belong to the candidate. Both midpoint
 paths show one of two native windows destroyed, with the context/display still alive.
 
+The expanded candidate-discard and restoration-discard controls also pass on those
+three paths. Candidate recovery observes only old fixture pixels during sampled
+restoration, requires the retained rollback PTS, resumes old playback, receives four
+witness button events and preserves the second output. The restoration negative control
+receives a real discard and exits with an error and no successful JSON report. Normal
+publication/rollback/finalization and the existing cleanup cases continue to pass.
+
 This is a bounded private diagnostic with fixed published geometry, logical-size SDR
 buffers and one transaction. It is not general worker IPC, production Apply or a content
 sandbox. Injected media-bus errors after confirmed candidate readiness now have automatic
 rollback coverage, including an error before candidate readiness is accepted. Real
-post-publication decoder failures, lost/discarded active presentation feedback,
+post-publication decoder failures, lost presentation feedback,
 control-connection loss and rollback
 failure still need qualification. A decoder/worker process crash loses both in-process
 sources; manager restart/static fallback remains necessary. Repeated candidates,
