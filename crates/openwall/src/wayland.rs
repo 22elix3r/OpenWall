@@ -447,7 +447,7 @@ fn run_content(
                 bail!("Wayland compositor disconnected");
             }
             Ok(_) if fds[0].revents().contains(PollFlags::IN) => {
-                guard.read()?;
+                openwall::presentation::wayland_io::read_events(guard)?;
             }
             Ok(_) => drop(guard),
             Err(rustix::io::Errno::INTR) => drop(guard),

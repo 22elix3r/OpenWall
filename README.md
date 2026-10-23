@@ -24,6 +24,7 @@ and visible; a successful build does not mean a desktop has been hardware-qualif
 - macOS AppKit desktop window integration and AVFoundation video playback implementation.
 - Offline PNG rendering, JSON compatibility reports, and desktop diagnostics.
 - Static scenes render on changes and then sleep; no continuous animation loop for still content.
+- Scene image textures are shared across layers and monitor painters on the same GPU device.
 
 **Validated locally:** Fedora/Hyprland, Vulkan rendering, desktop surface creation/removal,
 Qt GUI startup, and looping video. **Pending qualification:** macOS desktop/video behavior,
