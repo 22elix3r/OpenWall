@@ -25,6 +25,8 @@ mod ffi {
         type Backend = super::BackendRust;
 
         #[qinvokable]
+        fn open_initial(self: Pin<&mut Backend>);
+        #[qinvokable]
         fn choose(self: Pin<&mut Backend>, uri: &QString);
         #[qinvokable]
         fn sample(self: Pin<&mut Backend>);
@@ -107,6 +109,25 @@ impl Drop for BackendRust {
 impl ffi::Backend {
     fn message(mut self: Pin<&mut Self>, message: impl AsRef<str>) {
         self.as_mut().set_status(QString::from(message.as_ref()));
+    }
+
+    pub fn open_initial(mut self: Pin<&mut Self>) {
+        let result = crate::launch::wallpaper(std::env::args_os().skip(1))
+            .map_err(str::to_owned)
+            .and_then(|path| {
+                path.map(|path| {
+                    let path = std::path::absolute(path)
+                        .map_err(|error| format!("Could not resolve wallpaper path: {error}"))?;
+                    url::Url::from_file_path(path)
+                        .map_err(|_| "Choose a local wallpaper path.".to_owned())
+                })
+                .transpose()
+            });
+        match result {
+            Ok(Some(url)) => self.choose(&QString::from(url.as_str())),
+            Ok(None) => {}
+            Err(error) => self.as_mut().message(error),
+        }
     }
 
     pub fn sample(mut self: Pin<&mut Self>) {

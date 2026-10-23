@@ -72,6 +72,22 @@ Protocol references: [fractional scale](https://wayland.app/protocols/fractional
 [viewporter](https://wayland.app/protocols/viewporter), and the
 [core Wayland specification](https://wayland.freedesktop.org/docs/html/apa.html).
 
+The GUI accepts `--open PATH` to inspect/select one local wallpaper at launch; it does
+not apply it automatically. Qt's own arguments remain available. The existing `--check`
+mode waits for a pending selection/thumbnail to settle, with a finite upper bound,
+reports a diagnostic snapshot through Qt logging, and exits. Offscreen integration
+checks use it to cover actual scene/image import, generated PNG loading, missing and
+malformed previews, selection retention and temporary-file cleanup.
+
+The pinned [qt-build-utils 0.8.1 source](https://github.com/KDAB/cxx-qt/blob/666fd733bc82523c2b5b19d6c2938662791b18ad/crates/qt-build-utils/src/lib.rs#L271)
+runs QML compilation before regenerating its type-information file. Locally, changing
+QObject invokable order with an existing build reproduced an AOT method-lookup crash.
+OpenWall's build script removes only its previous `plugin.qmltypes` in its own Cargo
+OUT_DIR before invoking the builder, matching fresh-build behavior. The builder still
+regenerates/exports current metadata for tooling afterward. This avoids stale method
+indices without deleting Cargo caches or disabling QML compilation globally; revisit
+this workaround when the upstream generation order changes.
+
 `openwall-ui` exposes Rust objects to QML through CXX-Qt. Content inspection runs in a
 separate process on a background thread; the GUI never evaluates wallpaper scripts or
 loads downloaded QML. Worker logs are continuously drained and capped at 16 KiB to
