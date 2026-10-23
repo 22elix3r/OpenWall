@@ -2,7 +2,7 @@
 use std::{
     collections::BTreeMap,
     path::Path,
-    sync::{Arc, mpsc},
+    sync::{Arc, Mutex, Weak, mpsc},
     time::Duration,
 };
 
@@ -24,6 +24,30 @@ pub struct Gpu {
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    image_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    images: Mutex<ImageCache>,
+}
+
+struct UploadedImage {
+    bindings: wgpu::BindGroup,
+    bytes: u64,
+    // Keep the Arc allocation's identity reserved without retaining decoded pixels.
+    // A bare address key could otherwise alias a later image after CPU data is freed.
+    _source: Weak<image::RgbaImage>,
+}
+
+#[derive(Default)]
+struct ImageCache {
+    entries: BTreeMap<usize, Weak<UploadedImage>>,
+    uploads: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct TextureStats {
+    pub uploads: u64,
+    pub live_images: usize,
+    pub live_rgba_bytes: u64,
 }
 
 impl Gpu {
@@ -64,12 +88,128 @@ impl Gpu {
             adapter.get_info().name,
             adapter.get_info().backend
         );
+        let image_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("OpenWall shared image layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("OpenWall sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         Ok(Self {
             _instance: instance,
             adapter,
             device,
             queue,
+            image_layout,
+            sampler,
+            images: Mutex::new(ImageCache::default()),
         })
+    }
+
+    fn prune_images(&self) {
+        self.images
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .entries
+            .retain(|_, image| image.strong_count() > 0);
+    }
+
+    fn upload_image(&self, pixels: &Arc<image::RgbaImage>) -> Arc<UploadedImage> {
+        let mut images = self
+            .images
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let key = Arc::as_ptr(pixels) as usize;
+        if let Some(image) = images.entries.get(&key).and_then(Weak::upgrade) {
+            return image;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("OpenWall shared scene image"),
+            size: wgpu::Extent3d {
+                width: pixels.width(),
+                height: pixels.height(),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            texture.as_image_copy(),
+            pixels.as_raw(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(pixels.width() * 4),
+                rows_per_image: None,
+            },
+            texture.size(),
+        );
+        let view = texture.create_view(&Default::default());
+        let bindings = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("OpenWall shared scene image bindings"),
+            layout: &self.image_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        let image = Arc::new(UploadedImage {
+            bindings,
+            bytes: pixels.as_raw().len() as u64,
+            _source: Arc::downgrade(pixels),
+        });
+        images.uploads += 1;
+        images.entries.insert(key, Arc::downgrade(&image));
+        image
+    }
+
+    #[allow(dead_code)] // Windowless GPU resource conformance reports actual ownership.
+    pub fn texture_stats(&self) -> TextureStats {
+        let images = self
+            .images
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let (live_images, live_rgba_bytes) = images
+            .entries
+            .values()
+            .filter_map(Weak::upgrade)
+            .fold((0, 0), |(count, bytes), image| {
+                (count + 1, bytes + image.bytes)
+            });
+        TextureStats {
+            uploads: images.uploads,
+            live_images,
+            live_rgba_bytes,
+        }
     }
 
     pub fn configure(
@@ -110,7 +250,7 @@ pub struct Painter {
 
 struct DrawLayer {
     vertices: wgpu::Buffer,
-    bindings: wgpu::BindGroup,
+    image: Arc<UploadedImage>,
 }
 
 impl Painter {
@@ -128,11 +268,18 @@ impl Painter {
                 source: wgpu::ShaderSource::Wgsl(include_str!("sprite.wgsl").into()),
             });
         let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32];
+        let layout = gpu
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("OpenWall shared sprite layout"),
+                bind_group_layouts: &[Some(&gpu.image_layout)],
+                ..Default::default()
+            });
         let pipeline = gpu
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("OpenWall sprite pipeline"),
-                layout: None,
+                layout: Some(&layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vertex_main"),
@@ -159,64 +306,12 @@ impl Painter {
                 multiview_mask: None,
                 cache: None,
             });
-        let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("OpenWall sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let layout = pipeline.get_bind_group_layout(0);
-        let mut textures: BTreeMap<usize, wgpu::BindGroup> = BTreeMap::new();
+        gpu.prune_images();
         let layers = scene
             .layers
             .iter()
             .map(|layer| {
-                let key = Arc::as_ptr(&layer.pixels) as usize;
-                let bindings = textures
-                    .entry(key)
-                    .or_insert_with(|| {
-                        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
-                            label: Some("wallpaper texture"),
-                            size: wgpu::Extent3d {
-                                width: layer.pixels.width(),
-                                height: layer.pixels.height(),
-                                depth_or_array_layers: 1,
-                            },
-                            mip_level_count: 1,
-                            sample_count: 1,
-                            dimension: wgpu::TextureDimension::D2,
-                            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                                | wgpu::TextureUsages::COPY_DST,
-                            view_formats: &[],
-                        });
-                        gpu.queue.write_texture(
-                            texture.as_image_copy(),
-                            layer.pixels.as_raw(),
-                            wgpu::TexelCopyBufferLayout {
-                                offset: 0,
-                                bytes_per_row: Some(layer.pixels.width() * 4),
-                                rows_per_image: None,
-                            },
-                            texture.size(),
-                        );
-                        let view = texture.create_view(&Default::default());
-                        gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: None,
-                            layout: &layout,
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: wgpu::BindingResource::TextureView(&view),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: wgpu::BindingResource::Sampler(&sampler),
-                                },
-                            ],
-                        })
-                    })
-                    .clone();
+                let image = gpu.upload_image(&layer.pixels);
                 let vertices = vertices(layer, scene, width, height);
                 let vertices = gpu
                     .device
@@ -225,7 +320,7 @@ impl Painter {
                         contents: bytemuck::cast_slice(&vertices),
                         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     });
-                DrawLayer { vertices, bindings }
+                DrawLayer { vertices, image }
             })
             .collect();
         Self {
@@ -268,7 +363,7 @@ impl Painter {
         });
         pass.set_pipeline(&self.pipeline);
         for layer in &self.layers {
-            pass.set_bind_group(0, &layer.bindings, &[]);
+            pass.set_bind_group(0, &layer.image.bindings, &[]);
             pass.set_vertex_buffer(0, layer.vertices.slice(..));
             pass.draw(0..6, 0..1);
         }
@@ -323,6 +418,31 @@ pub fn render_png(scene: &Scene, path: &Path, width: u32, height: u32) -> Result
         "render dimensions must be 1..8192"
     );
     let gpu = pollster::block_on(Gpu::new(Gpu::instance(), None))?;
+    let painter = Painter::new(
+        &gpu,
+        scene,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        width,
+        height,
+    );
+    let rgba = render_rgba(&gpu, &painter, width, height)?;
+    image::save_buffer(path, &rgba, width, height, image::ColorType::Rgba8)
+        .context("could not save rendered PNG")
+}
+
+/// Readback for offline rendering/conformance only; desktop presentation never calls it.
+pub fn render_rgba(gpu: &Gpu, painter: &Painter, width: u32, height: u32) -> Result<Vec<u8>> {
+    ensure!(
+        width > 0 && height > 0 && width <= 8192 && height <= 8192,
+        "render dimensions must be 1..8192"
+    );
+    ensure!(
+        matches!(
+            painter.format,
+            wgpu::TextureFormat::Rgba8UnormSrgb | wgpu::TextureFormat::Bgra8UnormSrgb
+        ),
+        "offline readback needs an 8-bit sRGB target"
+    );
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("OpenWall offline render"),
         size: wgpu::Extent3d {
@@ -333,11 +453,10 @@ pub fn render_png(scene: &Scene, path: &Path, width: u32, height: u32) -> Result
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format: painter.format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-    let painter = Painter::new(&gpu, scene, texture.format(), width, height);
     let stride = (width * 4).div_ceil(256) * 256;
     let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -379,6 +498,10 @@ pub fn render_png(scene: &Scene, path: &Path, width: u32, height: u32) -> Result
         }
     }
     buffer.unmap();
-    image::save_buffer(path, &rgba, width, height, image::ColorType::Rgba8)
-        .context("could not save rendered PNG")
+    if painter.format == wgpu::TextureFormat::Bgra8UnormSrgb {
+        for pixel in rgba.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+    }
+    Ok(rgba)
 }

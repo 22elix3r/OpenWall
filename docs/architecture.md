@@ -88,6 +88,25 @@ regenerates/exports current metadata for tooling afterward. This avoids stale me
 indices without deleting Cargo caches or disabling QML compilation globally; revisit
 this workaround when the upstream generation order changes.
 
+Static scene image uploads are shared by painters belonging to the same `Gpu` device.
+Each unique decoded image identity has one texture/binding group across its layers and
+monitor painters; each painter still owns its vertex geometry and format-specific
+pipeline. An explicit device-owned image layout permits the same bindings in RGBA/BGRA
+pipelines. The cache keeps weak references to uploaded resources and prunes expired
+entries when constructing a painter. The last painter releases application ownership
+of its images; re-creating it uploads again. GPU resources keep only weak CPU image
+identity reservations, preventing address reuse from aliasing another image without
+retaining decoded pixel vectors. The cache is neither global nor shared across devices,
+processes, graphics APIs or different decoded image identities with equal content.
+
+A windowless conformance probe checks upload counts, actual pixels across target formats,
+independent geometry, painter/source retirement, re-creation and device isolation. It
+passes software Vulkan, AMD integrated Vulkan and NVIDIA Vulkan locally. Its byte counts
+measure live RGBA payload under application ownership, not physical driver allocations
+or an energy benchmark. Readback remains confined to offline rendering/conformance;
+live desktop presentation does not use the readback helper. CI will compile the Metal path;
+physical macOS resource/presentation qualification remains pending.
+
 `openwall-ui` exposes Rust objects to QML through CXX-Qt. Content inspection runs in a
 separate process on a background thread; the GUI never evaluates wallpaper scripts or
 loads downloaded QML. Worker logs are continuously drained and capped at 16 KiB to
