@@ -2,6 +2,10 @@
 use super::*;
 use std::path::Path;
 
+fn run(command: &mut Command, timeout: Duration) -> io::Result<Output> {
+    crate::query::run(command, timeout)
+}
+
 fn python(code: &str) -> Command {
     let mut command = Command::new("python3");
     command.args(["-c", code]);
@@ -128,6 +132,65 @@ fn invalid_deadline_does_not_spawn_a_worker() {
         io::ErrorKind::InvalidInput
     );
     assert!(!file.exists());
+}
+
+#[test]
+fn cancelled_queries_reap_workers_without_cancelling_other_queries() {
+    let directory = tempfile::tempdir().unwrap();
+    let cancellation = crate::query::Cancellation::default();
+    cancellation.cancel();
+    let marker = directory.path().join("not-spawned");
+    let mut command = python("import pathlib, sys; pathlib.Path(sys.argv[1]).touch()");
+    command.arg(&marker);
+    assert_eq!(
+        crate::query::run_cancellable(&mut command, Duration::from_secs(60), &cancellation)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::Interrupted
+    );
+    assert!(!marker.exists(), "already-cancelled query spawned a child");
+
+    for close_pipes in [false, true] {
+        let pid_file = directory.path().join(format!("worker-{close_pipes}"));
+        let worker_file = pid_file.clone();
+        let cancellation = crate::query::Cancellation::default();
+        let worker_cancellation = cancellation.clone();
+        let worker = std::thread::spawn(move || {
+            let mut command = python(
+                "import os, pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); (os.close(1),os.close(2)) if sys.argv[2]=='close' else None; time.sleep(60)",
+            );
+            command
+                .arg(worker_file)
+                .arg(if close_pipes { "close" } else { "open" });
+            crate::query::run_cancellable(
+                &mut command,
+                Duration::from_secs(60),
+                &worker_cancellation,
+            )
+        });
+        let until = Instant::now() + Duration::from_secs(5);
+        while !pid_file.exists() {
+            assert!(Instant::now() < until, "cancellable worker did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        cancellation.cancel();
+        // A fresh query must remain usable while the obsolete one is cancelled.
+        let output = run(&mut python("print('fresh')"), Duration::from_secs(5)).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"fresh\n");
+        while !worker.is_finished() {
+            assert!(
+                Instant::now() < until,
+                "cancelled query kept its worker alive"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        reaped(&pid_file);
+    }
 }
 
 #[test]

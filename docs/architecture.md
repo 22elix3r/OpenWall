@@ -75,7 +75,12 @@ Protocol references: [fractional scale](https://wayland.app/protocols/fractional
 `openwall-ui` exposes Rust objects to QML through CXX-Qt. Content inspection runs in a
 separate process on a background thread; the GUI never evaluates wallpaper scripts or
 loads downloaded QML. Worker logs are continuously drained and capped at 16 KiB to
-prevent pipe backpressure. Generation checks prevent stale inspection results replacing
+prevent pipe backpressure. Selecting another file or returning to the sample cancels
+the obsolete inspection,
+terminating and reaping its owned process group within the query loop's polling interval
+when native process operations are responsive. Cancellation belongs to that inspection;
+display discovery and newer inspections remain usable. Generation checks prevent stale
+inspection results replacing
 a newer selection. The current GUI owns its workers and stops them on exit.
 
 GUI inspection and display discovery use finite process queries on Linux/macOS:

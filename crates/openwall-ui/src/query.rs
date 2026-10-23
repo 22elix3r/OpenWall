@@ -4,7 +4,7 @@ use std::{
     io,
     process::{Command, Output},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
@@ -13,6 +13,20 @@ use std::{
 
 static CLOSING: AtomicBool = AtomicBool::new(false);
 static QUERIES: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Cancellation belongs to one query; cancelling it does not close the application.
+#[derive(Clone, Default)]
+pub struct Cancellation(Arc<AtomicBool>);
+
+impl Cancellation {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
 
 pub fn is_closing() -> bool {
     CLOSING.load(Ordering::Acquire)
@@ -65,17 +79,25 @@ pub fn shutdown() {
 mod platform;
 
 pub fn run(command: &mut Command, timeout: Duration) -> io::Result<Output> {
-    if is_closing() {
+    run_cancellable(command, timeout, &Cancellation::default())
+}
+
+pub fn run_cancellable(
+    command: &mut Command,
+    timeout: Duration,
+    cancellation: &Cancellation,
+) -> io::Result<Output> {
+    if is_closing() || cancellation.is_cancelled() {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "application is closing",
+            "player query was cancelled",
         ));
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    return platform::run(command, timeout);
+    return platform::run(command, timeout, cancellation);
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = (command, timeout);
+        let _ = (command, timeout, cancellation);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "worker queries require macOS or Linux",

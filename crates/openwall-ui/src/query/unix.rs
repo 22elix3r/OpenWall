@@ -103,7 +103,11 @@ impl<R: Read + AsFd> Pipe<R> {
 #[path = "tests.rs"]
 mod tests;
 
-pub fn run(command: &mut Command, timeout: Duration) -> io::Result<Output> {
+pub fn run(
+    command: &mut Command,
+    timeout: Duration,
+    cancellation: &super::Cancellation,
+) -> io::Result<Output> {
     let deadline = Instant::now()
         .checked_add(timeout)
         .filter(|_| !timeout.is_zero())
@@ -133,10 +137,10 @@ pub fn run(command: &mut Command, timeout: Duration) -> io::Result<Output> {
         true,
     )?;
     loop {
-        if super::is_closing() {
+        if super::is_closing() || cancellation.is_cancelled() {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
-                "application is closing",
+                "player query was cancelled",
             ));
         }
         if Instant::now() >= deadline {
