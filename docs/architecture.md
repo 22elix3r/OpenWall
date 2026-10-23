@@ -39,6 +39,14 @@ the parent surface has a static shared-memory black buffer backed by an anonymou
 so video workers never initialize a second scene GPU/device or require a writable temporary
 filesystem. macOS uses AppKit and AVFoundation.
 
+Wayland socket readiness can become stale when Vulkan WSI or GStreamer also reads the
+connection. Runtime and conformance loops use one read-outcome helper: a documented
+`WouldBlock` read returns to dispatch/polling, while disconnects, protocol errors and
+other failures propagate. The [Wayland backend contract](https://docs.rs/wayland-client/0.31.15/wayland_client/backend/struct.ReadEventsGuard.html#method.read)
+explicitly permits a no-data result. Private socket-pair regressions exercise empty
+reads, readiness consumed by another reader and closed-peer failure without accessing
+a desktop session.
+
 Wayland video previews and experimental shell-hosted workers use an OpenWall-owned XDG
 toplevel. GStreamer receives a separate container subsurface, preserving OpenWall's
 exclusive ownership of root commits and XDG configure acknowledgments. This matters

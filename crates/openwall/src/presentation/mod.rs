@@ -3,3 +3,6 @@
 pub mod feedback;
 #[cfg(target_os = "linux")]
 pub mod wayland_tree;
+
+#[cfg(target_os = "linux")]
+pub mod wayland_io;

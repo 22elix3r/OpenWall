@@ -316,7 +316,7 @@ pub fn run(path: PathBuf, duration: Option<Duration>) -> Result<()> {
                 bail!("Wayland compositor disconnected")
             }
             Ok(_) if fds[0].revents().contains(PollFlags::IN) => {
-                guard.read()?;
+                openwall::presentation::wayland_io::read_events(guard)?;
             }
             Ok(_) | Err(rustix::io::Errno::INTR) => drop(guard),
             Err(error) => return Err(error.into()),
