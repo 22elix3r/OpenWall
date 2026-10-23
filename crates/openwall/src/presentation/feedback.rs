@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Cancelling readiness does not cancel a compositor's eventual terminal event.
-use std::collections::BTreeMap;
+use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
 const LIMIT: usize = 16;
 
@@ -19,12 +19,36 @@ impl std::fmt::Display for RegistrationError {
 }
 impl std::error::Error for RegistrationError {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Completion {
     Presented,
     Discarded,
     CancelledPresented,
     CancelledDiscarded,
+}
+
+/// An owner-thread receipt for exactly one feedback registration. It retains only
+/// terminal bookkeeping, never native surfaces or media. Dropping it does not cancel
+/// protocol feedback; cancelled requests still occupy capacity until a terminal event.
+#[derive(Clone, Debug)]
+pub struct Receipt {
+    id: u64,
+    completion: Rc<Cell<Option<Completion>>>,
+}
+
+impl Receipt {
+    pub fn submission_id(&self) -> u64 {
+        self.id
+    }
+    pub fn completion(&self) -> Option<Completion> {
+        self.completion.get()
+    }
+}
+
+struct Pending {
+    cancelled: bool,
+    completion: Rc<Cell<Option<Completion>>>,
 }
 
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -39,50 +63,57 @@ pub struct Snapshot {
 
 #[derive(Default)]
 pub struct Tracker {
-    // false = active readiness request, true = locally cancelled, still awaiting
-    // the protocol's terminal event. Keeping it occupies bounded capacity.
-    pending: BTreeMap<u64, bool>,
+    // Locally cancelled requests still await protocol terminal events and occupy
+    // bounded capacity. Per-registration receipts outlive diagnostic history.
+    pending: BTreeMap<u64, Pending>,
     cancelled: u64,
     cancelled_presented: u64,
     cancelled_discarded: u64,
 }
 
 impl Tracker {
-    pub fn register(&mut self, id: u64) -> Result<(), RegistrationError> {
+    pub fn register(&mut self, id: u64) -> Result<Receipt, RegistrationError> {
         if self.pending.contains_key(&id) {
             return Err(RegistrationError::DuplicateSubmission);
         }
         if self.pending.len() == LIMIT {
             return Err(RegistrationError::Capacity);
         }
-        self.pending.insert(id, false);
-        Ok(())
+        let completion = Rc::new(Cell::new(None));
+        self.pending.insert(
+            id,
+            Pending {
+                cancelled: false,
+                completion: completion.clone(),
+            },
+        );
+        Ok(Receipt { id, completion })
     }
 
     pub fn cancel(&mut self, id: u64) -> bool {
-        let Some(cancelled) = self.pending.get_mut(&id) else {
+        let Some(pending) = self.pending.get_mut(&id) else {
             return false;
         };
-        if *cancelled {
+        if pending.cancelled {
             return false;
         }
-        *cancelled = true;
+        pending.cancelled = true;
         self.cancelled += 1;
         true
     }
 
     pub fn cancel_all(&mut self) {
-        for cancelled in self.pending.values_mut() {
-            if !*cancelled {
-                *cancelled = true;
+        for pending in self.pending.values_mut() {
+            if !pending.cancelled {
+                pending.cancelled = true;
                 self.cancelled += 1;
             }
         }
     }
 
     pub fn complete(&mut self, id: u64, presented: bool) -> Option<Completion> {
-        let cancelled = self.pending.remove(&id)?;
-        Some(match (cancelled, presented) {
+        let pending = self.pending.remove(&id)?;
+        let completion = match (pending.cancelled, presented) {
             (false, true) => Completion::Presented,
             (false, false) => Completion::Discarded,
             (true, true) => {
@@ -93,11 +124,13 @@ impl Tracker {
                 self.cancelled_discarded += 1;
                 Completion::CancelledDiscarded
             }
-        })
+        };
+        pending.completion.set(Some(completion));
+        Some(completion)
     }
 
     pub fn has_active(&self) -> bool {
-        self.pending.values().any(|cancelled| !cancelled)
+        self.pending.values().any(|pending| !pending.cancelled)
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -106,7 +139,7 @@ impl Tracker {
             active: self
                 .pending
                 .values()
-                .filter(|cancelled| !**cancelled)
+                .filter(|pending| !pending.cancelled)
                 .count(),
             cancelled: self.cancelled,
             cancelled_presented: self.cancelled_presented,
@@ -167,10 +200,13 @@ mod tests {
         }
         tracker.cancel_all();
         assert!(!tracker.has_active());
-        assert_eq!(tracker.register(99), Err(RegistrationError::Capacity));
         assert_eq!(
-            tracker.register(0),
-            Err(RegistrationError::DuplicateSubmission)
+            tracker.register(99).unwrap_err(),
+            RegistrationError::Capacity
+        );
+        assert_eq!(
+            tracker.register(0).unwrap_err(),
+            RegistrationError::DuplicateSubmission
         );
         assert!(!tracker.cancel(0));
         assert_eq!(tracker.snapshot().cancelled, LIMIT as u64);
@@ -180,5 +216,41 @@ mod tests {
         );
         tracker.register(99).unwrap();
         assert!(tracker.has_active());
+    }
+
+    #[test]
+    fn receipts_keep_exact_terminal_proof_after_many_later_presentations() {
+        let mut tracker = Tracker::default();
+        let first = tracker.register(0).unwrap();
+        let cancelled = tracker.register(1).unwrap();
+        tracker.cancel(1);
+        assert_eq!(first.completion(), None);
+        assert_eq!(cancelled.completion(), None);
+        let restored = tracker.register(2).unwrap();
+        tracker.complete(1, true);
+        assert_eq!(cancelled.completion(), Some(Completion::CancelledPresented));
+        assert_eq!(restored.completion(), None);
+        tracker.complete(2, true);
+        tracker.complete(0, true);
+        for id in 3..10_000 {
+            let receipt = tracker.register(id).unwrap();
+            assert_eq!(receipt.submission_id(), id);
+            assert_eq!(receipt.completion(), None);
+            tracker.complete(id, id % 2 == 0);
+            assert_eq!(
+                receipt.completion(),
+                Some(if id % 2 == 0 {
+                    Completion::Presented
+                } else {
+                    Completion::Discarded
+                })
+            );
+        }
+        assert_eq!(tracker.snapshot().pending, 0);
+        assert_eq!(first.completion(), Some(Completion::Presented));
+        assert_eq!(restored.completion(), Some(Completion::Presented));
+        assert_eq!(cancelled.completion(), Some(Completion::CancelledPresented));
+        assert_eq!(tracker.complete(1, false), None);
+        assert_eq!(cancelled.completion(), Some(Completion::CancelledPresented));
     }
 }

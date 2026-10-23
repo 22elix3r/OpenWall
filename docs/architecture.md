@@ -178,6 +178,14 @@ retained. These are integration requirements, not implemented IPC/manager behavi
 The [two-source diagnostic](video-replacement-probe.md) currently establishes explicit
 publication/rollback and pre-publication media failure handling in one process, with
 injected post-publication media-error rollback and explicit finalization retirement.
+Per-registration presentation receipts retain terminal bookkeeping independently of
+bounded diagnostic histories. The video replacement path uses exact receipts to gate
+clocks and identify an active candidate discard; a full history cannot suppress a later
+successful transition or misidentify a failure. Receipts are local to the owning event
+thread and retain no native/GStreamer resources. Keeping application receipts bounded,
+generating unambiguous source/transaction identities and reconciling durable manager
+decisions remain responsibilities of the persistent worker/manager design.
+
 The reusable presentation-feedback tracker also separates locally cancelled readiness
 from a compositor's eventual terminal event, so a failed candidate's late feedback
 cannot complete a restoration wait. The candidate clock stays paused when its error

@@ -73,6 +73,20 @@ The cross-platform `presentation::feedback::Tracker` bounds outstanding primary
 feedback identities at sixteen. Cancellation retains an identity until its terminal
 event: `wp_presentation_feedback` has no client cancellation request. A late presented
 or discarded event for a cancelled submission cannot clear an active restoration wait.
+Registration also returns an owner-thread `Receipt` holding only the submission ID and
+its exact terminal result. The replacement diagnostic retains transition/candidate/latest
+receipts instead of using bounded presentation/discard identity histories for readiness
+or recovery. Only an active `Presented` result can start a media clock; a cancelled
+presentation remains observable without acquiring readiness authority. Receipts do not
+retain native surfaces/media, and dropping one does not cancel a protocol request.
+Pure Rust tests retain early receipts across 9,997 later terminal events while the
+tracker returns to zero pending entries. The private `--saturate-feedback-history`
+control fills both 256-entry diagnostic histories with sentinel IDs before playback;
+publication/rollback and active-candidate-discard recovery must still use real terminal
+feedback. Runtime counters continue to count actual events, not the sentinel histories.
+This removes a history-length dependency; it does not qualify arbitrary repeated
+transactions, connection-global ID reuse or manager transaction epochs.
+
 Cancelled discards are counted separately from unexpected active discards. Pure Rust
 tests exercise both terminal event orders and capacity exhaustion; private compositor
 tests check early error recovery, the exact retained previous PTS, four witness button
@@ -83,8 +97,9 @@ An active candidate discard now schedules the same restoration instead of termin
 both sources. The discarded identity must belong to the most recent candidate submission
 and occur while publication/candidate playback still retains a previous source. Discards
 of the previous source, restoration or finalized source remain errors; they cannot be
-reported as a successful rollback. Primary discard identity history is bounded at 256
-entries, above this finite diagnostic's 240-submission cap.
+reported as a successful rollback. Diagnostic identity histories remain bounded at 256
+entries and are used only for reporting; this finite diagnostic still caps submissions
+at 240.
 
 `--discard-candidate-submission` forces a real compositor discard on an application-owned
 synchronized container: a buffer commit is superseded by an unmap before their parent

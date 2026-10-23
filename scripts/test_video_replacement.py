@@ -167,7 +167,10 @@ def main():
                         assert trace["factory"] == "nvvp9dec" and trace["all_memory_is_gl"] and "memory:GLMemory" in trace["caps"], report
                 presented = set(report["presented_frame_ids"])
                 assert all(frame["id"] not in presented for frame in report["frames"] if not frame["visible"]), report
-                assert all(start["presented_frame_id"] in presented for start in report["clock_starts"]), report
+                if report["feedback_history_saturated"]:
+                    assert len(presented) == 256 and all(start["presented_frame_id"] not in presented for start in report["clock_starts"]), report
+                else:
+                    assert all(start["presented_frame_id"] in presented for start in report["clock_starts"]), report
                 assert report["previous"]["playback_started"], report
 
             child, log = spawn()
@@ -206,6 +209,40 @@ def main():
             assert report["removed_candidate_lifecycle"] == dict(LIFECYCLE, surface_destructions=1, context_destructions=0, display_terminations=0), report
             assert session.capture(other).tobytes() == other_baseline, "other output changed"
             wait_for(empty, "rollback cleanup")
+
+            saturated, log = spawn(extra=["--saturate-feedback-history"])
+            session.expect_log(saturated, log, "Replacement candidate cached; previous video continues")
+            moving(saturated, 0)
+            command(saturated, b"publish\n")
+            session.expect_log(saturated, log, "Replacement candidate video presented; pointer reached witness")
+            moving(saturated, 1)
+            command(saturated, b"rollback\n")
+            session.expect_log(saturated, log, "Replacement previous video restored; pointer reached witness")
+            moving(saturated, 0)
+            saturated.send_signal(signal.SIGINT)
+            saturated_report = json.loads(finish(saturated))
+            assert saturated.returncode == 0 and saturated_report["status"] == "passed", session.diagnostics()
+            validate(saturated_report)
+            assert saturated_report["previous_restored"] and saturated_report["witness_button_events"] == 6, saturated_report
+            assert [start["source"] for start in saturated_report["clock_starts"]] == [0, 1, 0], saturated_report
+            assert saturated_report["candidate_first_frame_confirmed"] and saturated_report["candidate_presentation_receipt"]["completion"] == "presented", saturated_report
+            assert session.capture(other).tobytes() == other_baseline, "saturated history changed other output"
+            wait_for(empty, "saturated-history cleanup")
+
+            saturated_discard, log = spawn(extra=["--saturate-feedback-history", "--discard-candidate-submission"])
+            session.expect_log(saturated_discard, log, "Replacement candidate cached; previous video continues")
+            command(saturated_discard, b"publish\n")
+            session.expect_log(saturated_discard, log, "Replacement previous video restored; pointer reached witness")
+            moving(saturated_discard, 0)
+            saturated_discard.send_signal(signal.SIGINT)
+            saturated_discard_report = json.loads(finish(saturated_discard))
+            assert saturated_discard.returncode == 0 and saturated_discard_report["status"] == "passed", session.diagnostics()
+            validate(saturated_discard_report)
+            assert saturated_discard_report["handled_candidate_discards"] == 1 and len(saturated_discard_report["discarded_frame_ids"]) == 256, saturated_discard_report
+            assert saturated_discard_report["candidate_presentation_receipt"]["completion"] == "discarded" and not saturated_discard_report["candidate_first_frame_confirmed"], saturated_discard_report
+            assert [start["source"] for start in saturated_discard_report["clock_starts"]] == [0, 0] and saturated_discard_report["witness_button_events"] == 4, saturated_discard_report
+            assert session.capture(other).tobytes() == other_baseline, "saturated discard history changed other output"
+            wait_for(empty, "saturated-discard cleanup")
 
             aborted, log = spawn()
             session.expect_log(aborted, log, "Replacement candidate cached; previous video continues")
@@ -529,6 +566,7 @@ def main():
                                 "recreate retired branch and abort next hidden candidate without replacing root/context",
                                 "malformed next candidate retains moving committed video",
                                 "controller EOF/malformed input preserves or restores the retained assignment without a busy loop",
+                                "presentation receipts gate clocks when diagnostic history is full",
                                 "input negative control", "SIGKILL", "compositor loss"]}))
 
 
