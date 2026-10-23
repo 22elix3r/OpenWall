@@ -22,9 +22,21 @@ ApplicationWindow {
     font.pixelSize: 14
 
     Backend { id: backend }
-    Component.onCompleted: backend.discover_outputs()
+    Component.onCompleted: { backend.discover_outputs(); backend.open_initial() }
     Timer { interval: 1000; running: true; repeat: true; onTriggered: backend.refresh() }
-    Timer { interval: 1500; running: Qt.application.arguments.indexOf("--check") !== -1; onTriggered: Qt.quit() }
+    Timer {
+        interval: 1500; running: Qt.application.arguments.indexOf("--check") !== -1; repeat: true
+        property int attempts: 0
+        onTriggered: {
+            attempts++
+            if ((backend.busy || thumbnailImage.status === Image.Loading) && attempts < 12) return
+            console.info("OPENWALL_GUI_CHECK " + JSON.stringify({
+                busy: backend.busy, selected: backend.selected, title: backend.title,
+                status: backend.status, preview_url: backend.previewUrl, image_status: thumbnailImage.status
+            }))
+            Qt.quit()
+        }
+    }
     FileDialog {
         id: picker
         title: "Choose a wallpaper"
@@ -76,7 +88,7 @@ ApplicationWindow {
                     anchors.fill: parent; anchors.margins: 1; spacing: 0
                     Item {
                         Layout.fillWidth: true; Layout.fillHeight: true
-                        Image { anchors.fill: parent; source: backend.previewUrl; fillMode: Image.PreserveAspectCrop; asynchronous: true; clip: true }
+                        Image { id: thumbnailImage; anchors.fill: parent; source: backend.previewUrl; fillMode: Image.PreserveAspectCrop; asynchronous: true; clip: true }
                         Rectangle {
                             anchors.fill: parent
                             gradient: Gradient { GradientStop { position: 0.3; color: "transparent" } GradientStop { position: 1; color: "#e6171d2b" } }

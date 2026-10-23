@@ -85,6 +85,7 @@ Then build both executables in the same directory and launch the GUI:
 ```sh
 cargo build --workspace --locked
 cargo run -p openwall-ui
+cargo run -p openwall-ui -- --open /path/to/wallpaper/project.json
 ```
 
 Use `cargo build -p openwall --no-default-features` for image/scene tools without

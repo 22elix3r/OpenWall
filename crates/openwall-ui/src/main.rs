@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod backend;
+mod launch;
 mod outputs;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod process;
