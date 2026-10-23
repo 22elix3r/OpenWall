@@ -64,6 +64,7 @@ pub(super) struct State {
     pub presented: u32,
     pub presented_frame_ids: Vec<u64>,
     pub discarded: u32,
+    pub discarded_frame_ids: Vec<u64>,
     pub injected: bool,
     pub witness_buttons: u32,
     pub intercepted: bool,
@@ -815,6 +816,9 @@ impl Dispatch<wp_presentation_feedback::WpPresentationFeedback, u64> for State {
                 match state.feedback_tracker.complete(*frame_id, false) {
                     Some(Completion::Discarded) => {
                         state.discarded += 1;
+                        if state.discarded_frame_ids.len() < 256 {
+                            state.discarded_frame_ids.push(*frame_id);
+                        }
                         state.dirty = true;
                     }
                     Some(Completion::CancelledDiscarded) => {}

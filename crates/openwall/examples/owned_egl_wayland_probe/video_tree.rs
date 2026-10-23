@@ -107,6 +107,27 @@ impl Tree {
         Ok(&self.branch(index)?.surface)
     }
 
+    pub fn container(&self, index: usize) -> Result<&WlSurface> {
+        Ok(&self.branch(index)?.container)
+    }
+
+    /// Private fault injection on an application-owned container, never an EGL child.
+    pub fn discard_cached_publication(&self, index: usize) -> Result<()> {
+        ensure!(
+            self.active != Some(index),
+            "discard control requires a hidden branch"
+        );
+        let branch = self.branch(index)?;
+        branch.viewport.set_destination(self.size.0, self.size.1);
+        branch.container.attach(Some(&self.transparent), 0, 0);
+        branch.container.damage_buffer(0, 0, 1, 1);
+        branch.container.commit();
+        branch.container.attach(None, 0, 0);
+        branch.container.commit();
+        self.root.commit();
+        Ok(())
+    }
+
     pub fn flush(&self, index: usize) -> Result<()> {
         self.branch(index)?.container.commit();
         self.root.commit();

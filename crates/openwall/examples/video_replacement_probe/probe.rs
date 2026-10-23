@@ -56,8 +56,14 @@ struct Args {
     #[arg(long, value_parser=clap::value_parser!(u64).range(500..=2000))]
     fail_candidate_after_ms: Option<u64>,
     /// Inject before accepting candidate feedback; its media clock must never start.
-    #[arg(long, conflicts_with = "fail_candidate_after_ms")]
+    #[arg(long, conflicts_with_all = ["fail_candidate_after_ms", "discard_candidate_submission"])]
     fail_before_candidate_confirmation: bool,
+    /// Supersede the hidden candidate commit before mapping it; require real discard feedback.
+    #[arg(long, conflicts_with = "fail_candidate_after_ms")]
+    discard_candidate_submission: bool,
+    /// Negative control: discarded restoration must fail instead of claiming recovery.
+    #[arg(long, conflicts_with_all = ["discard_candidate_submission", "fail_before_candidate_confirmation", "fail_candidate_after_ms"])]
+    discard_restoration_submission: bool,
 }
 
 struct Source {
@@ -179,6 +185,7 @@ pub fn run() -> Result<()> {
     let finishes = Cell::new(0);
     let mut leases = VecDeque::new();
     let mut records = Vec::new();
+    let mut last_visible_submission = None;
     let mut retired = 0;
     let mut peak = 0;
     let mut phase = Phase::Initial;
@@ -206,6 +213,8 @@ pub fn run() -> Result<()> {
     let mut candidate_publication_id = None;
     let mut early_cancel_requested = false;
     let mut early_cancel_applied = false;
+    let mut handled_discards = 0;
+    let mut discard_injected = false;
     let mut restored_button_goal = 6;
     let mut clock_starts = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(args.seconds);
@@ -218,7 +227,21 @@ pub fn run() -> Result<()> {
             !state.intercepted,
             "replacement surface intercepted private input"
         );
-        ensure!(state.discarded == 0, "replacement presentation discarded");
+        if state.discarded > handled_discards {
+            let discarded = &state.discarded_frame_ids[handled_discards as usize..];
+            ensure!(
+                matches!(phase, Phase::Publishing | Phase::Candidate)
+                    && discarded
+                        .iter()
+                        .all(|id| last_visible_submission == Some((*id, 1))),
+                "previous/restoration/finalized presentation discarded"
+            );
+            candidate_failure.get_or_insert_with(|| "candidate presentation discarded".to_owned());
+            handled_discards = state.discarded;
+        }
+        if candidate_failure.is_some() && matches!(phase, Phase::Publishing | Phase::Candidate) {
+            validation_deadline = None;
+        }
         ensure!(
             state.configured == Some(size),
             "this diagnostic keeps published geometry fixed"
@@ -544,8 +567,16 @@ pub fn run() -> Result<()> {
             painter.draw(&texture, None, [0, 0, size.0, size.1])?;
             lease.seal()?;
             let id = records.len() as u64 + 1;
+            let discard_requested = kind == "publish" && args.discard_candidate_submission
+                || kind == "rollback" && args.discard_restoration_submission;
             if visible {
-                state.request_surface_feedback(&queue.handle(), tree.surface(index)?, id)?;
+                let target = if discard_requested {
+                    tree.container(index)?
+                } else {
+                    tree.surface(index)?
+                };
+                state.request_surface_feedback(&queue.handle(), target, id)?;
+                last_visible_submission = Some((id, index));
             }
             window.present()?;
             let refresh = window.take_refresh();
@@ -577,7 +608,12 @@ pub fn run() -> Result<()> {
                     }
                     phase = Phase::Restoring;
                 }
-                tree.show(index)?;
+                if discard_requested {
+                    tree.discard_cached_publication(index)?;
+                    discard_injected = true;
+                } else {
+                    tree.show(index)?;
+                }
                 transition = Some(id);
                 if kind == "publish" {
                     candidate_publication_id = Some(id);
@@ -692,6 +728,9 @@ pub fn run() -> Result<()> {
         "consumer_cpu_buffer_maps":0,"consumer_readbacks":0,"consumer_offscreen_targets":0,
         "consumer_fences":{"submitted":records.len(),"retired":retired,"peak_in_flight":peak,
             "limit":3,"cleanup_finish_calls":finishes.get()}});
+    report["discard_injected"] = discard_injected.into();
+    report["handled_candidate_discards"] = handled_discards.into();
+    report["discarded_frame_ids"] = serde_json::json!(state.discarded_frame_ids);
     eprintln!("Replacement removing private surfaces");
     drop(leases);
     drop(sources);

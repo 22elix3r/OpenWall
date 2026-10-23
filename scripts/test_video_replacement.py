@@ -262,6 +262,43 @@ def main():
             assert next(frame for frame in early_report["frames"] if frame["kind"] == "rollback")["pts_ns"] == early_report["rollback_pts_ns"], early_report
             wait_for(empty, "cancelled publication feedback cleanup")
 
+            discarded, log = spawn(extra=["--discard-candidate-submission"])
+            session.expect_log(discarded, log, "Replacement candidate cached; previous video continues")
+            command(discarded, b"publish\n")
+            session.expect_log(discarded, log, "Replacement candidate readiness cancelled; restoring retained previous video")
+            until = time.monotonic() + 8
+            while time.monotonic() < until:
+                pixels(discarded, [0])
+                if "Replacement previous video restored; pointer reached witness" in session.text(log):
+                    break
+            else:
+                raise AssertionError("discarded candidate did not restore previous video")
+            moving(discarded, 0)
+            discarded.send_signal(signal.SIGINT)
+            discarded_report = json.loads(finish(discarded))
+            assert discarded.returncode == 0 and discarded_report["status"] == "passed", session.diagnostics()
+            validate(discarded_report)
+            assert discarded_report["discard_injected"] and discarded_report["automatic_rollback"] and discarded_report["previous_restored"], discarded_report
+            assert discarded_report["candidate_failure"] == "candidate presentation discarded", discarded_report
+            assert discarded_report["handled_candidate_discards"] == 1, discarded_report
+            assert discarded_report["discarded_frame_ids"] == [discarded_report["candidate_publication_id"]], discarded_report
+            assert not discarded_report["candidate_first_frame_confirmed"] and not discarded_report["candidate_readiness_accepted"], discarded_report
+            assert not discarded_report["candidate"]["playback_started"] and [start["source"] for start in discarded_report["clock_starts"]] == [0, 0], discarded_report
+            assert discarded_report["witness_button_events"] == 4 and not discarded_report["fault_injected"], discarded_report
+            assert next(frame for frame in discarded_report["frames"] if frame["kind"] == "rollback")["pts_ns"] == discarded_report["rollback_pts_ns"], discarded_report
+            assert discarded_report["removed_candidate_lifecycle"] == dict(LIFECYCLE, surface_destructions=1, context_destructions=0, display_terminations=0), discarded_report
+            assert session.capture(other).tobytes() == other_baseline, "discard recovery changed other output"
+            wait_for(empty, "discarded candidate restoration cleanup")
+
+            broken_restore, log = spawn(extra=["--discard-restoration-submission"])
+            session.expect_log(broken_restore, log, "Replacement candidate cached; previous video continues")
+            command(broken_restore, b"publish\n")
+            session.expect_log(broken_restore, log, "Replacement candidate video presented; pointer reached witness")
+            command(broken_restore, b"rollback\n")
+            assert not finish(broken_restore).strip() and broken_restore.returncode != 0, session.diagnostics()
+            assert "previous/restoration/finalized presentation discarded" in session.text(log), session.diagnostics()
+            wait_for(empty, "discarded restoration negative control cleanup")
+
             finalized, log = spawn()
             session.expect_log(finalized, log, "Replacement candidate cached; previous video continues")
             command(finalized, b"publish\n")
@@ -341,11 +378,13 @@ def main():
                       "egl_lifecycle":report["egl_lifecycle"],"consumer_fences":report["consumer_fences"],
                       "early_cancellation_feedback":feedback,
                       "early_candidate_was_presented":early_report["candidate_first_frame_confirmed"],
+                      "handled_candidate_discards":discarded_report["handled_candidate_discards"],
                       "checks":["distinct old/new sources", "old video moves while candidate paused", "presentation-gated clocks",
                                 "sampled publication/rollback pixels", "rollback retained PTS", "video moves after restoration",
                                 "abort and malformed candidate retain moving previous video", "real input", "unchanged second output",
                                 "injected post-publication media error restores previous video", "failed/rolled-back candidate retired",
                                 "failed candidate readiness never starts its clock", "late cancelled feedback cannot complete restoration",
+                                "real candidate discard restores previous video", "discarded restoration fails without claiming recovery",
                                 "finalize retires previous source while candidate keeps moving and looping",
                                 "input negative control", "SIGKILL", "compositor loss"]}))
 

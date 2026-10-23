@@ -33,3 +33,14 @@ Connection discovery, GPU-resident buffer sharing and real desktop lifecycle qua
 remain open.
 These automated protocol/pixel checks do not qualify physical monitor hot-plug,
 suspend/resume, energy use, macOS, GNOME or general Plasma support.
+
+M0/M1 boundary progress (2026-10-23): optional native GL video conformance now has
+one reusable EGL owner per Wayland connection, shared decoder/output lifetime checks,
+and distinct old/new sources below one persistent desktop root. Private Mesa desktop
+GL/GLES and NVIDIA desktop GL tests cover presentation-gated clocks, retained-frame
+rollback, failed/cancelled candidate readiness, real candidate-discard recovery and
+explicit old-source retirement after finalization. A discarded restoration remains a
+failure. These are qualified building blocks for a persistent worker, not production
+Apply or a durable manager. Repeated transactions, versioned control/disconnection
+recovery, persistence, independent pause reasons and worker restart/fallback remain M1
+work; lost feedback and actual decoder/driver crashes still need recovery evidence.
