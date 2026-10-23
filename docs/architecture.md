@@ -17,6 +17,18 @@ flowchart LR
 original sample loading and reports. It has no Qt, GPU or desktop dependency. Package
 data is read without extraction. Resource paths stay inside the selected wallpaper root.
 PNG/JPEG/WebP and static raw TEX decoding is bounded; embedded-media TEX is rejected.
+Packed asset byte views share one owned package buffer instead of copying each entry.
+Aliased/overlapping offsets therefore cannot multiply payload storage by entry count.
+The source buffer moves into an `Arc<Vec<u8>>` without a second full-buffer copy; each
+view contains only a shared owner and validated range. The 512 MiB package, 64 MiB
+per-entry and 16,384-entry limits still apply. A retained view can keep the whole package
+snapshot alive until its last owner releases it; disk replacement does not mutate an
+existing snapshot. Entries are not decompressed or executed by indexing them. Path
+length is checked before formatting diagnostics, and byte-view Debug output reports
+length rather than dumping payload. Unsupported animated/video TEX flags are rejected
+before the upstream parser can construct animation metadata. These guards reduce
+allocation amplification; they are not an OS sandbox or complete package/TEX fuzzing.
+
 
 `openwall` is the actual GPU/media worker and diagnostic CLI. A scene's textures are
 uploaded to the GPU and rendered only on presentation/configuration changes. Linux
