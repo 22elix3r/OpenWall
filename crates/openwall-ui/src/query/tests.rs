@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
+use rustix::process::Pid;
 use std::path::Path;
 
 fn run(command: &mut Command, timeout: Duration) -> io::Result<Output> {

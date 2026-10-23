@@ -264,8 +264,14 @@ impl ffi::Backend {
             .rust_mut()
             .child
             .as_mut()
-            .and_then(|child| child.try_wait().ok().flatten());
-        if let Some(status) = ended {
+            .map(Worker::try_wait);
+        if let Some(Err(error)) = &ended {
+            self.as_mut().rust_mut().child.take();
+            self.as_mut().set_active(false);
+            self.as_mut()
+                .message(format!("Could not observe wallpaper player: {error}"));
+        }
+        if let Some(Ok(Some(status))) = ended {
             let child = self.as_mut().rust_mut().child.take();
             self.as_mut().set_active(false);
             if !status.success() {
