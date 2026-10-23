@@ -120,7 +120,11 @@ and pass read-only resources to workers. The native video experiments establish 
 specific presentation boundary: a persistent worker owns each desktop root and prepares
 candidate sources below unmapped synchronized containers. Independent background roots
 cannot supply a deterministic replacement order. The existing source remains active
-until publication and retained for rollback until the manager finalizes the assignment.
+until publication and retained for rollback until the manager finalizes the assignment. The private video diagnostic also
+accepts a bounded inherited Unix stream from a same-user controller: loss or invalid
+commands retire a hidden candidate or restore the retained source before finalization;
+a finalized assignment remains active. This validates responsive-event-loop ownership
+loss, not production IPC, driver-hang recovery or durable manager/worker reconciliation.
 
 The manager must publish a prepared candidate, await actual presentation on its target
 outputs, persist the assignment, then finalize resource retirement. Persistence failure,

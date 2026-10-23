@@ -55,7 +55,7 @@ pub fn run() -> Result<()> {
         std::env::var("OPENWALL_PRIVATE_COMPOSITOR").as_deref() == Ok("1"),
         "nested EGL proof requires OPENWALL_PRIVATE_COMPOSITOR=1 from its private harness"
     );
-    let control = control::Control::bind(&args.control_socket)?;
+    let mut control = control::Control::bind(&args.control_socket)?;
     let (mut reader, writer) = UnixStream::pair()?;
     reader.set_nonblocking(true)?;
     writer.set_nonblocking(true)?;

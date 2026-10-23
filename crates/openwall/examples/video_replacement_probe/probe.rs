@@ -44,8 +44,15 @@ struct Args {
     candidate: PathBuf,
     #[arg(long)]
     output: String,
+    #[arg(
+        long,
+        required_unless_present = "control_stdin",
+        conflicts_with = "control_stdin"
+    )]
+    control_socket: Option<PathBuf>,
+    /// Inherited, connected same-user Unix stream; EOF represents controller loss.
     #[arg(long)]
-    control_socket: PathBuf,
+    control_stdin: bool,
     #[arg(long, value_enum, default_value_t=gl_api::Api::Desktop)]
     gl_api: gl_api::Api,
     #[arg(long, default_value_t=30, value_parser=clap::value_parser!(u64).range(1..=30))]
@@ -128,7 +135,15 @@ pub fn run() -> Result<()> {
         gst::version().0 == 1 && gst::version().1 >= 26,
         "video replacement requires GStreamer 1.26 or newer"
     );
-    let control = control::Control::bind(&args.control_socket)?;
+    let mut control = if args.control_stdin {
+        control::Control::stdin()?
+    } else {
+        control::Control::bind(
+            args.control_socket
+                .as_deref()
+                .context("control socket missing")?,
+        )?
+    };
     let (mut reader, writer) = UnixStream::pair()?;
     reader.set_nonblocking(true)?;
     writer.set_nonblocking(true)?;
@@ -224,6 +239,8 @@ pub fn run() -> Result<()> {
     let mut reprepare_report = None;
     let mut reprepare_report_error = None;
     let mut reprepare_removal_counts = None;
+    let mut controller_failure = None;
+    let mut controller_failure_handled = false;
     let mut restored_button_goal = 6;
     let mut clock_starts = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(args.seconds);
@@ -236,6 +253,45 @@ pub fn run() -> Result<()> {
             !state.intercepted,
             "replacement surface intercepted private input"
         );
+        // Observe ownership loss before accepting any queued publication feedback.
+        let incoming = match control.next() {
+            Ok(command) => command,
+            Err(error) if args.control_stdin => {
+                controller_failure.get_or_insert_with(|| error.to_string());
+                control.close();
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        if args.control_stdin && control.is_closed() {
+            controller_failure.get_or_insert_with(|| "controller disconnected".to_owned());
+        }
+        if let Some(reason) = &controller_failure
+            && !controller_failure_handled
+        {
+            controller_failure_handled = true;
+            command_pending = None;
+            match phase {
+                Phase::Initial | Phase::Previous | Phase::Publishing | Phase::Candidate => {
+                    candidate_failure.get_or_insert_with(|| reason.clone());
+                    if phase == Phase::Candidate
+                        && let Some((id, 1)) = last_visible_submission
+                    {
+                        state.cancel_frame_feedback(id);
+                    }
+                }
+                Phase::Finalized if reprepare_started && reprepare_removal_counts.is_none() => {
+                    reprepare_failure.get_or_insert_with(|| reason.clone());
+                }
+                _ => {}
+            }
+            eprintln!("Replacement controller lost; preserving retained assignment");
+        }
+        let incoming = if controller_failure.is_none() {
+            incoming
+        } else {
+            None
+        };
         if state.discarded > handled_discards {
             let discarded = &state.discarded_frame_ids[handled_discards as usize..];
             ensure!(
@@ -362,7 +418,7 @@ pub fn run() -> Result<()> {
             validation_deadline = None;
             eprintln!("Replacement previous video restored; pointer reached witness");
         }
-        if old_ready && !attempted {
+        if old_ready && !attempted && candidate_failure.is_none() {
             attempted = true;
             prepared_deadline = Some(Instant::now() + Duration::from_secs(8));
             match media::Media::new(
@@ -376,31 +432,33 @@ pub fn run() -> Result<()> {
                 Err(error) => candidate_failure = Some(error.to_string()),
             }
         }
-        if let Some(command) = control.next()? {
-            ensure!(
-                command_pending.is_none(),
-                "replacement command already pending"
-            );
-            match command {
-                Command::Publish => ensure!(
-                    phase == Phase::Previous
-                        && old_ready
-                        && sources[1].as_ref().is_some_and(|source| source.prepared),
-                    "invalid replacement command order"
-                ),
-                Command::Abort => ensure!(
-                    phase == Phase::Previous
-                        && old_ready
-                        && sources[1].as_ref().is_some_and(|source| source.prepared)
-                        || phase == Phase::Finalized
-                            && reprepare_started
-                            && sources[0].as_ref().is_some_and(|source| source.prepared),
-                    "invalid replacement command order"
-                ),
-                Command::Rollback | Command::Finalize => ensure!(
-                    phase == Phase::Candidate && candidate_ready,
-                    "invalid replacement command order"
-                ),
+        if let Some(command) = incoming {
+            let valid = command_pending.is_none()
+                && match command {
+                    Command::Publish => {
+                        phase == Phase::Previous
+                            && old_ready
+                            && sources[1].as_ref().is_some_and(|source| source.prepared)
+                    }
+                    Command::Abort => {
+                        phase == Phase::Previous
+                            && old_ready
+                            && sources[1].as_ref().is_some_and(|source| source.prepared)
+                            || phase == Phase::Finalized
+                                && reprepare_started
+                                && sources[0].as_ref().is_some_and(|source| source.prepared)
+                    }
+                    Command::Rollback | Command::Finalize => {
+                        phase == Phase::Candidate && candidate_ready
+                    }
+                };
+            if !valid {
+                if args.control_stdin {
+                    controller_failure = Some("invalid replacement command order".into());
+                    control.close();
+                    continue; // Re-enter ownership-loss handling before another submission.
+                }
+                anyhow::bail!("invalid replacement command order");
             }
             command_pending = Some(command);
         }
@@ -783,12 +841,9 @@ pub fn run() -> Result<()> {
         if !leases.is_empty() {
             next = next.min(Instant::now() + Duration::from_millis(1));
         }
-        wayland_poll::wait_fds(
-            &mut queue,
-            &connection,
-            &[reader.as_fd(), control.as_fd()],
-            next,
-        )?;
+        let watched = [reader.as_fd(), control.as_fd()];
+        let watched_count = if control.is_closed() { 1 } else { 2 };
+        wayland_poll::wait_fds(&mut queue, &connection, &watched[..watched_count], next)?;
     }
     while shared_gl::retire_one(&mut leases, true, &AtomicBool::new(false))? {
         retired += 1;
@@ -826,6 +881,13 @@ pub fn run() -> Result<()> {
     report["discard_injected"] = discard_injected.into();
     report["handled_candidate_discards"] = handled_discards.into();
     report["discarded_frame_ids"] = serde_json::json!(state.discarded_frame_ids);
+    report["controller_failure"] = serde_json::json!(controller_failure);
+    report["control_transport"] = if args.control_stdin {
+        "inherited_unix_stream"
+    } else {
+        "private_datagram"
+    }
+    .into();
     if reprepare_started && reprepare_report.is_none() && reprepare_removal_counts.is_none() {
         reprepare_report = sources[0].as_ref().map(Source::report).transpose()?;
     }
