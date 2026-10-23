@@ -156,7 +156,7 @@ pub fn run() -> Result<()> {
         .context("root missing")?
         .id()
         .protocol_id();
-    let mut tree = wayland::video_tree::Tree::new(&state, &queue.handle())?;
+    let mut tree = wayland::video_tree::create(&state, &queue.handle())?;
     let session = egl_window::Session::new(&connection, args.gl_api)?;
     let counts = session.counts();
     let mut windows = [None, None];
@@ -496,7 +496,7 @@ pub fn run() -> Result<()> {
         let target = match command_pending.as_ref().filter(|_| switching) {
             Some(Command::Publish) => 1,
             Some(Command::Rollback) => 0,
-            _ => tree.active.unwrap_or(0),
+            _ => tree.active().unwrap_or(0),
         };
         let mut again = false;
         for index in 0..2 {
@@ -609,7 +609,12 @@ pub fn run() -> Result<()> {
                     phase = Phase::Restoring;
                 }
                 if discard_requested {
-                    tree.discard_cached_publication(index)?;
+                    wayland::video_tree::discard_cached_publication(
+                        &tree,
+                        &state,
+                        &queue.handle(),
+                        index,
+                    )?;
                     discard_injected = true;
                 } else {
                     tree.show(index)?;
@@ -660,7 +665,7 @@ pub fn run() -> Result<()> {
             && !state.pending_feedback
             && command_pending.is_none()
             && transition.is_none()
-            && let Some(index) = tree.active
+            && let Some(index) = tree.active()
             && let Some(source) = sources[index].as_mut()
             && source.media.eos
             && !source.media.has_sample()?

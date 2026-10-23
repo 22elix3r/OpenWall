@@ -6,6 +6,15 @@ available with `native-egl`, independently of GStreamer. `video-gl-probe` includ
 feature plus its media dependencies. This extraction does not change production Apply
 or create a stable external plugin ABI.
 
+The separate Linux `presentation::wayland_tree` module provides the synchronized
+protocol tree for persistent-root publication without requiring `native-egl` or
+GStreamer. Its configured root/role belongs to the adapter; a native EGL window can
+borrow one leaf while the tree owns its protocol lifetime. The two-source conformance
+program uses this runtime tree. Fault injection and the private input witness stay in
+example support code. This extraction supplies low-level commits and retirement;
+confirmed readiness, assignment persistence, geometry changes and repeated transactions
+are separate worker/manager requirements.
+
 `Session` owns a retained Wayland connection, one EGLDisplay, one creating-thread context
 and its loaded GL dispatch. Each `Window` retains an `Rc<Session>` and destroys its
 EGLSurface/native wrapper before releasing that reference. `Rc`/`Cell` prevent sending
