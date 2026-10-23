@@ -104,6 +104,14 @@ cargo run -p openwall -- apply samples/aurora/project.json --seconds 10
 cargo run -p openwall -- apply /path/to/video.mp4 --output DP-1
 ```
 
+On macOS, `outputs` lists physical dimensions, scale, position and a `selector` for
+each display. Pass that selector (for example, `macos:123`) to `--output`; the GUI
+uses it behind the display label. Unique monitor names remain accepted, while duplicate
+names require a selector. These identifiers describe the current display configuration,
+not persistent hardware identities. Omitting `--output` still targets the default
+macOS display. Real macOS multi-display, Spaces and video lifecycle qualification is
+pending; CI compilation does not establish that support.
+
 The development build locates the bundled sample in this checkout. Run from a retained
 source tree; standalone installers and application bundles have not been produced yet.
 Closing the current GUI stops its workers. A persistent background manager is the next
