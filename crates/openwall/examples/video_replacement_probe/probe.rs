@@ -52,6 +52,9 @@ struct Args {
     seconds: u64,
     #[arg(long)]
     intercept_input: bool,
+    /// Post an explicit diagnostic GStreamer error after confirmed candidate readiness.
+    #[arg(long, value_parser=clap::value_parser!(u64).range(500..=2000))]
+    fail_candidate_after_ms: Option<u64>,
 }
 
 struct Source {
@@ -99,6 +102,7 @@ enum Phase {
     Restored,
     Aborted,
     Failed,
+    Finalized,
 }
 
 pub fn run() -> Result<()> {
@@ -185,9 +189,18 @@ pub fn run() -> Result<()> {
     let mut restored_ready = false;
     let mut command_pending = None;
     let mut candidate_report = None;
+    let mut candidate_report_error = None;
+    let mut previous_report = None;
     let mut candidate_failure = None;
     let mut removal_counts = None;
     let mut rollback_pts = None;
+    let mut finalization_counts = None;
+    let mut finalization_frame_id = None;
+    let mut fault_deadline = None;
+    let mut fault_injected = false;
+    let mut auto_rollback = false;
+    let mut candidate_first_confirmed = false;
+    let mut restored_button_goal = 6;
     let mut clock_starts = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(args.seconds);
     loop {
@@ -214,11 +227,28 @@ pub fn run() -> Result<()> {
                 == root_id,
             "replacement desktop root changed"
         );
-        sources[0]
-            .as_mut()
-            .context("previous source missing")?
-            .media
-            .messages()?;
+        if let Some(source) = &mut sources[0] {
+            source.media.messages()?;
+        }
+        if fault_deadline.is_some_and(|until| Instant::now() >= until) && !fault_injected {
+            sources[1]
+                .as_ref()
+                .context("fault source missing")?
+                .media
+                .diagnostic_error()?;
+            fault_injected = true;
+            fault_deadline = None;
+        }
+        if candidate_failure.is_none()
+            && let Some(source) = &mut sources[1]
+            && let Err(error) = source.media.messages()
+        {
+            ensure!(
+                phase != Phase::Finalized,
+                "finalized source failed after previous-source retirement: {error}"
+            );
+            candidate_failure = Some(error.to_string());
+        }
         while shared_gl::retire_one(&mut leases, false, &AtomicBool::new(false))? {
             retired += 1;
         }
@@ -235,9 +265,15 @@ pub fn run() -> Result<()> {
             let source = sources[index]
                 .as_mut()
                 .context("transition source missing")?;
-            source.media.resume()?;
-            source.started = true;
-            clock_starts.push(serde_json::json!({"source":index,"presented_frame_id":id}));
+            if index == 0 || candidate_failure.is_none() {
+                source.media.resume()?;
+                source.started = true;
+                clock_starts.push(serde_json::json!({"source":index,"presented_frame_id":id}));
+            }
+            candidate_first_confirmed |= index == 1;
+            if phase == Phase::Restoring {
+                restored_button_goal = state.witness_buttons + 2;
+            }
             phase = match phase {
                 Phase::Initial => Phase::Previous,
                 Phase::Publishing => Phase::Candidate,
@@ -257,8 +293,14 @@ pub fn run() -> Result<()> {
             candidate_ready = true;
             validation_deadline = None;
             eprintln!("Replacement candidate video presented; pointer reached witness");
+            fault_deadline = args
+                .fail_candidate_after_ms
+                .map(|millis| Instant::now() + Duration::from_millis(millis));
         }
-        if phase == Phase::Restored && state.witness_buttons >= 6 && !restored_ready {
+        if phase == Phase::Restored
+            && state.witness_buttons >= restored_button_goal
+            && !restored_ready
+        {
             restored_ready = true;
             validation_deadline = None;
             eprintln!("Replacement previous video restored; pointer reached witness");
@@ -277,17 +319,6 @@ pub fn run() -> Result<()> {
                 Err(error) => candidate_failure = Some(error.to_string()),
             }
         }
-        if let Some(source) = &mut sources[1]
-            && phase == Phase::Previous
-            && let Err(error) = source.media.messages()
-        {
-            candidate_failure = Some(error.to_string());
-        }
-        if let Some(source) = &mut sources[1]
-            && phase != Phase::Previous
-        {
-            source.media.messages()?;
-        }
         if let Some(command) = control.next()? {
             ensure!(
                 command_pending.is_none(),
@@ -300,12 +331,17 @@ pub fn run() -> Result<()> {
                         && sources[1].as_ref().is_some_and(|source| source.prepared),
                     "invalid replacement command order"
                 ),
-                Command::Rollback => ensure!(
+                Command::Rollback | Command::Finalize => ensure!(
                     phase == Phase::Candidate && candidate_ready,
                     "invalid replacement command order"
                 ),
             }
             command_pending = Some(command);
+        }
+        if candidate_failure.is_some() && phase == Phase::Candidate && !auto_rollback {
+            command_pending = Some(Command::Rollback);
+            auto_rollback = true;
+            eprintln!("Replacement candidate failed; restoring retained previous video");
         }
         if stopped.load(Ordering::Relaxed) {
             break;
@@ -344,7 +380,13 @@ pub fn run() -> Result<()> {
             while shared_gl::retire_one(&mut leases, true, &AtomicBool::new(false))? {
                 retired += 1;
             }
-            candidate_report = sources[1].as_ref().map(Source::report).transpose()?;
+            match sources[1].as_ref().map(Source::report).transpose() {
+                Ok(report) => candidate_report = report,
+                Err(error) if candidate_failure.is_some() => {
+                    candidate_report_error = Some(error.to_string())
+                }
+                Err(error) => return Err(error),
+            }
             drop(sources[1].take());
             drop(windows[1].take());
             tree.remove(1)?;
@@ -358,9 +400,47 @@ pub fn run() -> Result<()> {
             command_pending = None;
             eprintln!("Replacement candidate removed; previous video retained");
         }
+        if phase == Phase::Restored && sources[1].is_some() && !state.pending_feedback {
+            while shared_gl::retire_one(&mut leases, true, &AtomicBool::new(false))? {
+                retired += 1;
+            }
+            match sources[1].as_ref().map(Source::report).transpose() {
+                Ok(report) => candidate_report = report,
+                Err(error) if candidate_failure.is_some() => {
+                    candidate_report_error = Some(error.to_string())
+                }
+                Err(error) => return Err(error),
+            }
+            drop(sources[1].take());
+            drop(windows[1].take());
+            tree.remove(1)?;
+            removal_counts = Some(counts.snapshot());
+            fault_deadline = None;
+            eprintln!("Replacement rolled-back candidate retired; previous video continues");
+        }
+        if matches!(command_pending, Some(Command::Finalize)) {
+            while shared_gl::retire_one(&mut leases, true, &AtomicBool::new(false))? {
+                retired += 1;
+            }
+            previous_report = sources[0].as_ref().map(Source::report).transpose()?;
+            drop(sources[0].take());
+            drop(windows[0].take());
+            tree.remove(0)?;
+            finalization_counts = Some(counts.snapshot());
+            finalization_frame_id = Some(records.len());
+            command_pending = None;
+            phase = Phase::Finalized;
+            fault_deadline = None;
+            eprintln!("Replacement finalized; previous source retired; candidate video continues");
+        }
         if matches!(
             phase,
-            Phase::Previous | Phase::Candidate | Phase::Restored | Phase::Aborted | Phase::Failed
+            Phase::Previous
+                | Phase::Candidate
+                | Phase::Restored
+                | Phase::Aborted
+                | Phase::Failed
+                | Phase::Finalized
         ) {
             state.inject_if_ready();
         }
@@ -468,11 +548,14 @@ pub fn run() -> Result<()> {
                     previous.media.pause()?;
                     phase = Phase::Publishing;
                 } else if kind == "rollback" {
-                    sources[1]
+                    let paused = sources[1]
                         .as_ref()
                         .context("candidate missing")?
                         .media
-                        .pause()?;
+                        .pause();
+                    if candidate_failure.is_none() {
+                        paused?;
+                    }
                     phase = Phase::Restoring;
                 }
                 tree.show(index)?;
@@ -522,9 +605,14 @@ pub fn run() -> Result<()> {
             source.media.rewind()?;
         }
         let mut next = deadline;
-        for until in [feedback_deadline, prepared_deadline, validation_deadline]
-            .into_iter()
-            .flatten()
+        for until in [
+            feedback_deadline,
+            prepared_deadline,
+            validation_deadline,
+            fault_deadline,
+        ]
+        .into_iter()
+        .flatten()
         {
             next = next.min(until);
         }
@@ -548,17 +636,24 @@ pub fn run() -> Result<()> {
         old_ready,
         "replacement stopped before previous video presentation/input"
     );
-    let complete = restored_ready || matches!(phase, Phase::Aborted | Phase::Failed);
+    let complete =
+        restored_ready || matches!(phase, Phase::Aborted | Phase::Failed | Phase::Finalized);
     if candidate_report.is_none() {
         candidate_report = sources[1].as_ref().map(Source::report).transpose()?;
+    }
+    if previous_report.is_none() {
+        previous_report = sources[0].as_ref().map(Source::report).transpose()?;
     }
     let mut report = serde_json::json!({"schema_version":1,"scope":"two_video_sources_persistent_root",
         "status":if complete { "passed" } else { "interrupted" },"gl":session.report()?,
         "gstreamer":gst::version_string().to_string(),"root_surface_id":root_id,
-        "previous":sources[0].as_ref().context("previous source missing")?.report()?,"candidate":candidate_report,
+        "previous":previous_report,"candidate":candidate_report,"candidate_report_error":candidate_report_error,
         "candidate_failure":candidate_failure,"candidate_aborted":phase==Phase::Aborted,
         "candidate_presented":candidate_ready,"previous_restored":restored_ready,"rollback_pts_ns":rollback_pts,
         "removed_candidate_lifecycle":removal_counts,"frames":records,"presented_frame_ids":state.presented_frame_ids,
+        "finalized":phase==Phase::Finalized,"retired_previous_lifecycle":finalization_counts,
+        "finalization_frame_id":finalization_frame_id,
+        "fault_injected":fault_injected,"automatic_rollback":auto_rollback,"candidate_first_frame_confirmed":candidate_first_confirmed,
         "clock_starts":clock_starts,"witness_button_events":state.witness_buttons,
         "consumer_cpu_buffer_maps":0,"consumer_readbacks":0,"consumer_offscreen_targets":0,
         "consumer_fences":{"submitted":records.len(),"retired":retired,"peak_in_flight":peak,

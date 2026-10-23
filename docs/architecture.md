@@ -93,8 +93,9 @@ outputs, persist the assignment, then finalize resource retirement. Persistence 
 lost control or a transaction deadline must roll back while the previous source is
 retained. These are integration requirements, not implemented IPC/manager behavior.
 The [two-source diagnostic](video-replacement-probe.md) currently establishes explicit
-publication/rollback and pre-publication media failure handling in one process. Automatic
-post-publication recovery and repeated assignments remain open. A process crash still
+publication/rollback and pre-publication media failure handling in one process, with
+injected post-publication media-error rollback and explicit finalization retirement.
+Real decoder/presentation/control failure recovery and repeated assignments remain open. A process crash still
 loses that worker's sources; the manager needs bounded restart/backoff and a trusted
 static/previous fallback after its restart budget is exhausted. Combine
 user/power/session/adapter-visibility pause reasons independently of transaction state.
