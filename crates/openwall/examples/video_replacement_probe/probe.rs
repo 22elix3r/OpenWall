@@ -64,6 +64,9 @@ struct Args {
     /// Negative control: discarded restoration must fail instead of claiming recovery.
     #[arg(long, conflicts_with_all = ["discard_candidate_submission", "fail_before_candidate_confirmation", "fail_candidate_after_ms"])]
     discard_restoration_submission: bool,
+    /// Prepare another hidden candidate in the retired slot after committing the first.
+    #[arg(long, conflicts_with_all = ["fail_candidate_after_ms", "fail_before_candidate_confirmation", "discard_candidate_submission", "discard_restoration_submission"])]
+    reprepare_after_finalize: Option<PathBuf>,
 }
 
 struct Source {
@@ -215,6 +218,12 @@ pub fn run() -> Result<()> {
     let mut early_cancel_applied = false;
     let mut handled_discards = 0;
     let mut discard_injected = false;
+    let mut reprepare_started = false;
+    let mut reprepare_aborted = false;
+    let mut reprepare_failure = None;
+    let mut reprepare_report = None;
+    let mut reprepare_report_error = None;
+    let mut reprepare_removal_counts = None;
     let mut restored_button_goal = 6;
     let mut clock_starts = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(args.seconds);
@@ -256,8 +265,14 @@ pub fn run() -> Result<()> {
                 == root_id,
             "replacement desktop root changed"
         );
-        if let Some(source) = &mut sources[0] {
-            source.media.messages()?;
+        if let Some(source) = &mut sources[0]
+            && let Err(error) = source.media.messages()
+        {
+            if phase == Phase::Finalized && reprepare_started {
+                reprepare_failure.get_or_insert_with(|| error.to_string());
+            } else {
+                return Err(error);
+            }
         }
         if fault_deadline.is_some_and(|until| Instant::now() >= until) && !fault_injected {
             sources[1]
@@ -367,10 +382,19 @@ pub fn run() -> Result<()> {
                 "replacement command already pending"
             );
             match command {
-                Command::Publish | Command::Abort => ensure!(
+                Command::Publish => ensure!(
                     phase == Phase::Previous
                         && old_ready
                         && sources[1].as_ref().is_some_and(|source| source.prepared),
+                    "invalid replacement command order"
+                ),
+                Command::Abort => ensure!(
+                    phase == Phase::Previous
+                        && old_ready
+                        && sources[1].as_ref().is_some_and(|source| source.prepared)
+                        || phase == Phase::Finalized
+                            && reprepare_started
+                            && sources[0].as_ref().is_some_and(|source| source.prepared),
                     "invalid replacement command order"
                 ),
                 Command::Rollback | Command::Finalize => ensure!(
@@ -412,9 +436,36 @@ pub fn run() -> Result<()> {
         }
         if let Some(until) = prepared_deadline
             && Instant::now() >= until
-            && !sources[1].as_ref().is_some_and(|source| source.prepared)
         {
-            candidate_failure = Some("candidate preroll timed out".into());
+            if phase == Phase::Finalized && reprepare_started {
+                reprepare_failure.get_or_insert_with(|| "next candidate preroll timed out".into());
+            } else if !sources[1].as_ref().is_some_and(|source| source.prepared) {
+                candidate_failure = Some("candidate preroll timed out".into());
+            }
+        }
+        if phase == Phase::Finalized
+            && reprepare_started
+            && reprepare_removal_counts.is_none()
+            && (reprepare_failure.is_some() || matches!(command_pending, Some(Command::Abort)))
+        {
+            while shared_gl::retire_one(&mut leases, true, &AtomicBool::new(false))? {
+                retired += 1;
+            }
+            match sources[0].as_ref().map(Source::report).transpose() {
+                Ok(report) => reprepare_report = report,
+                Err(error) if reprepare_failure.is_some() => {
+                    reprepare_report_error = Some(error.to_string())
+                }
+                Err(error) => return Err(error),
+            }
+            drop(sources[0].take());
+            drop(windows[0].take());
+            tree.remove(0)?;
+            reprepare_removal_counts = Some(counts.snapshot());
+            reprepare_aborted = reprepare_failure.is_none();
+            command_pending = None;
+            prepared_deadline = None;
+            eprintln!("Replacement re-prepared candidate removed; committed video continues");
         }
         if phase == Phase::Previous
             && (candidate_failure.is_some() || matches!(command_pending, Some(Command::Abort)))
@@ -474,6 +525,39 @@ pub fn run() -> Result<()> {
             phase = Phase::Finalized;
             fault_deadline = None;
             eprintln!("Replacement finalized; previous source retired; candidate video continues");
+            if let Some(path) = &args.reprepare_after_finalize {
+                tree.recreate(0, &queue.handle())?;
+                ensure!(
+                    tree.recreate(0, &queue.handle()).is_err()
+                        && tree.recreate(2, &queue.handle()).is_err()
+                        && tree.remove(1).is_err(),
+                    "recreated tree ownership guard failed"
+                );
+                let native = unsafe {
+                    // SAFETY: The recreated leaf belongs exclusively to this window;
+                    // the persistent tree survives all native windows and producers.
+                    egl_window::Window::on_session(
+                        session.clone(),
+                        tree.surface(0)?,
+                        size.0,
+                        size.1,
+                    )
+                }?;
+                native.disable_swap_throttle()?;
+                windows[0] = Some(native);
+                reprepare_started = true;
+                prepared_deadline = Some(Instant::now() + Duration::from_secs(8));
+                match media::Media::new(
+                    path,
+                    &sharing.display,
+                    &sharing.wrapped,
+                    writer.clone(),
+                    true,
+                ) {
+                    Ok(media) => sources[0] = Some(Source::new(media)),
+                    Err(error) => reprepare_failure = Some(error.to_string()),
+                }
+            }
         }
         if matches!(
             phase,
@@ -500,10 +584,12 @@ pub fn run() -> Result<()> {
         };
         let mut again = false;
         for index in 0..2 {
-            let hidden_candidate = index == 1
-                && phase == Phase::Previous
+            let hidden_candidate = ((index == 1 && phase == Phase::Previous)
+                || (index == 0 && phase == Phase::Finalized && reprepare_started))
                 && !switching
-                && sources[1].as_ref().is_some_and(|source| !source.prepared);
+                && sources[index]
+                    .as_ref()
+                    .is_some_and(|source| !source.prepared);
             let visible_target =
                 index == target && !matches!(phase, Phase::Publishing | Phase::Restoring);
             if !hidden_candidate && !visible_target
@@ -638,6 +724,7 @@ pub fn run() -> Result<()> {
             }
             records.push(
                 serde_json::json!({"id":id,"source":index,"pts_ns":texture.pts_ns,
+                "generation":if index==0 && reprepare_started {2} else {index},
                 "texture_id":texture.texture.0.get(),"visible":visible,"kind":kind,
                 "geometry_refresh_required":refresh}),
             );
@@ -650,6 +737,9 @@ pub fn run() -> Result<()> {
                 if index == 1 {
                     prepared_deadline = None;
                     eprintln!("Replacement candidate cached; previous video continues");
+                } else if phase == Phase::Finalized && reprepare_started {
+                    prepared_deadline = None;
+                    eprintln!("Replacement next candidate cached; committed video continues");
                 }
             }
             again |= refresh;
@@ -715,7 +805,7 @@ pub fn run() -> Result<()> {
     if previous_report.is_none() {
         previous_report = sources[0].as_ref().map(Source::report).transpose()?;
     }
-    let mut report = serde_json::json!({"schema_version":1,"scope":"two_video_sources_persistent_root",
+    let mut report = serde_json::json!({"schema_version":1,"scope":if reprepare_started {"reprepare_video_candidate_persistent_root"} else {"two_video_sources_persistent_root"},
         "status":if complete { "passed" } else { "interrupted" },"gl":session.report()?,
         "gstreamer":gst::version_string().to_string(),"root_surface_id":root_id,
         "previous":previous_report,"candidate":candidate_report,"candidate_report_error":candidate_report_error,
@@ -736,6 +826,12 @@ pub fn run() -> Result<()> {
     report["discard_injected"] = discard_injected.into();
     report["handled_candidate_discards"] = handled_discards.into();
     report["discarded_frame_ids"] = serde_json::json!(state.discarded_frame_ids);
+    if reprepare_started && reprepare_report.is_none() && reprepare_removal_counts.is_none() {
+        reprepare_report = sources[0].as_ref().map(Source::report).transpose()?;
+    }
+    report["reprepared"] = serde_json::json!({"attempted":reprepare_started,
+        "aborted":reprepare_aborted,"failure":reprepare_failure,"candidate":reprepare_report,
+        "report_error":reprepare_report_error,"removed_lifecycle":reprepare_removal_counts});
     eprintln!("Replacement removing private surfaces");
     drop(leases);
     drop(sources);

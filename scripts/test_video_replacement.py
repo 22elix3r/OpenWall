@@ -122,14 +122,15 @@ def main():
                 return image is not None and all(max(abs(a-b) for a,b in zip(image.getpixel((int(image.width*x), int(image.height*y))), baseline)) <= 2
                                                 for x,y in [(.1,.25),(.7,.25),(.3,.75),(.9,.75)])
 
-            def validate(report):
-                assert report["egl_lifecycle"] == LIFECYCLE, report
+            def validate(report, surfaces=2):
+                assert report["egl_lifecycle"] == dict(LIFECYCLE, surface_creations=surfaces, surface_destructions=surfaces), report
                 fences = report["consumer_fences"]
                 assert fences["submitted"] == fences["retired"] == len(report["frames"]), report
                 assert 0 < fences["peak_in_flight"] <= fences["limit"] == 3 and fences["cleanup_finish_calls"] == 0, report
                 assert all(report[key] == 0 for key in ["consumer_cpu_buffer_maps", "consumer_readbacks", "consumer_offscreen_targets"]), report
-                for label in ["previous", "candidate"]:
-                    source = report[label]
+                sources = [report[label] for label in ["previous", "candidate"]]
+                sources.append(report.get("reprepared", {}).get("candidate"))
+                for source in sources:
                     if not source or not source["prepared"]:
                         continue
                     assert len(source["decoders"]) == 1 and "memory:GLMemory" in source["input_memory"]["caps"], report
@@ -319,6 +320,57 @@ def main():
             assert session.capture(other).tobytes() == other_baseline, "finalization changed other output"
             wait_for(empty, "finalized candidate cleanup")
 
+            renewed, log = spawn(extra=["--reprepare-after-finalize", str(videos[0])])
+            session.expect_log(renewed, log, "Replacement candidate cached; previous video continues")
+            command(renewed, b"publish\n")
+            session.expect_log(renewed, log, "Replacement candidate video presented; pointer reached witness")
+            command(renewed, b"finalize\n")
+            session.expect_log(renewed, log, "Replacement finalized; previous source retired; candidate video continues")
+            until = time.monotonic() + 8
+            while time.monotonic() < until:
+                pixels(renewed, [1])
+                if "Replacement next candidate cached; committed video continues" in session.text(log):
+                    break
+            else:
+                raise AssertionError("retired native branch could not prepare the next candidate")
+            renewed_markers = moving(renewed, 1, 7)
+            command(renewed, b"abort\n")
+            session.expect_log(renewed, log, "Replacement re-prepared candidate removed; committed video continues")
+            moving(renewed, 1)
+            renewed.send_signal(signal.SIGINT)
+            renewal = json.loads(finish(renewed))
+            assert renewed.returncode == 0 and renewal["status"] == "passed", session.diagnostics()
+            validate(renewal, surfaces=3)
+            next_candidate = renewal["reprepared"]
+            assert renewal["finalized"] and not renewal["previous_restored"] and renewal["witness_button_events"] == 4, renewal
+            assert next_candidate["attempted"] and next_candidate["aborted"] and not next_candidate["failure"], renewal
+            assert next_candidate["candidate"]["prepared"] and not next_candidate["candidate"]["playback_started"], renewal
+            assert next_candidate["candidate"]["delivery"]["received"] == 1 and next_candidate["report_error"] is None, renewal
+            assert next_candidate["removed_lifecycle"] == dict(LIFECYCLE, surface_creations=3, surface_destructions=2, context_destructions=0, display_terminations=0), renewal
+            new_frames = [frame for frame in renewal["frames"] if frame["generation"] == 2]
+            assert new_frames and all(not frame["visible"] and frame["pts_ns"] == 0 for frame in new_frames), renewal
+            assert [start["source"] for start in renewal["clock_starts"]] == [0, 1], renewal
+            assert len(renewed_markers) == 12 and renewal["candidate"]["completed_loops"] >= 1, renewal
+            assert session.capture(other).tobytes() == other_baseline, "branch recreation changed other output"
+            wait_for(empty, "re-prepared candidate cleanup")
+
+            for bad_path in [invalid_media, directory / "missing-next.webm"]:
+                bad_next, log = spawn(extra=["--reprepare-after-finalize", str(bad_path)])
+                session.expect_log(bad_next, log, "Replacement candidate cached; previous video continues")
+                command(bad_next, b"publish\n")
+                session.expect_log(bad_next, log, "Replacement candidate video presented; pointer reached witness")
+                command(bad_next, b"finalize\n")
+                session.expect_log(bad_next, log, "Replacement re-prepared candidate removed; committed video continues")
+                moving(bad_next, 1)
+                bad_next.send_signal(signal.SIGINT)
+                next_failure = json.loads(finish(bad_next))
+                assert bad_next.returncode == 0 and next_failure["status"] == "passed", session.diagnostics()
+                validate(next_failure, surfaces=3)
+                assert next_failure["finalized"] and next_failure["reprepared"]["failure"] and not next_failure["reprepared"]["aborted"], next_failure
+                assert next_failure["reprepared"]["removed_lifecycle"] == dict(LIFECYCLE, surface_creations=3, surface_destructions=2, context_destructions=0, display_terminations=0), next_failure
+                assert [start["source"] for start in next_failure["clock_starts"]] == [0, 1] and next_failure["witness_button_events"] == 4, next_failure
+                wait_for(empty, "failed next candidate keeps committed video")
+
             for message, error in [(b"rollback\n", "invalid replacement command order"),
                                    (b"finalize\n", "invalid replacement command order"),
                                    (b"unknown\n", "invalid nested diagnostic command"),
@@ -379,6 +431,7 @@ def main():
                       "early_cancellation_feedback":feedback,
                       "early_candidate_was_presented":early_report["candidate_first_frame_confirmed"],
                       "handled_candidate_discards":discarded_report["handled_candidate_discards"],
+                      "reprepared_lifecycle":renewal["egl_lifecycle"],
                       "checks":["distinct old/new sources", "old video moves while candidate paused", "presentation-gated clocks",
                                 "sampled publication/rollback pixels", "rollback retained PTS", "video moves after restoration",
                                 "abort and malformed candidate retain moving previous video", "real input", "unchanged second output",
@@ -386,6 +439,8 @@ def main():
                                 "failed candidate readiness never starts its clock", "late cancelled feedback cannot complete restoration",
                                 "real candidate discard restores previous video", "discarded restoration fails without claiming recovery",
                                 "finalize retires previous source while candidate keeps moving and looping",
+                                "recreate retired branch and abort next hidden candidate without replacing root/context",
+                                "malformed next candidate retains moving committed video",
                                 "input negative control", "SIGKILL", "compositor loss"]}))
 
 
