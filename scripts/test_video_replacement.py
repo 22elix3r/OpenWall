@@ -15,6 +15,7 @@ import time
 from private_gpu import nvidia_renderer
 from test_native_gl_video import fixture, identify_pixels
 from test_wayland_headless import Session, wait_for
+from test_owned_egl_wayland import cpu_seconds
 
 ROOT = Path(__file__).resolve().parents[1]
 LIFECYCLE = {"context_creations": 1, "context_destructions": 1, "display_initializations": 1,
@@ -47,6 +48,20 @@ def main():
     assert guard.returncode != 0 and "OPENWALL_PRIVATE_COMPOSITOR=1" in guard.stderr and not guard.stdout.strip(), guard
     with tempfile.TemporaryDirectory(prefix="openwall-video-replacement-") as temporary:
         directory = Path(temporary)
+        # Reject inherited descriptors before attempting any display connection.
+        private_env = {key: value for key, value in env.items()
+                       if key not in {"DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "SWAYSOCK", "DBUS_SESSION_BUS_ADDRESS"}}
+        private_env.update(OPENWALL_PRIVATE_COMPOSITOR="1", XDG_RUNTIME_DIR=str(directory))
+        bad_owner, bad_endpoint = socket.socketpair(type=socket.SOCK_DGRAM)
+        try:
+            for descriptor in [subprocess.DEVNULL, bad_endpoint]:
+                invalid = subprocess.run([str(binary), "missing.webm", "candidate.webm", "--output", "never-connect",
+                                          "--control-stdin"], env=private_env, stdin=descriptor,
+                                         capture_output=True, text=True, timeout=5)
+                assert invalid.returncode != 0 and "control stdin" in invalid.stderr and not invalid.stdout.strip(), invalid
+        finally:
+            bad_owner.close()
+            bad_endpoint.close()
         videos, colors = [], []
         for index in range(2):
             source = directory / f"source-{index}"
@@ -65,24 +80,32 @@ def main():
             session.env.update(GST_DEBUG="nvdecoder:5", GST_DEBUG_NO_COLOR="1")
         maximum_error = 0
         captures = 0
+        results, controls = {}, {}
         try:
             session.connect()
             output, other = sorted(item["name"] for item in session.outputs() if item["active"])
             baseline = wait_for(lambda: session.capture(output), "baseline").getpixel((10, 10))
             other_baseline = session.capture(other).tobytes()
-            results, controls = {}, {}
 
-            def spawn(candidate=None, extra=()):
+            def spawn(candidate=None, extra=(), stream=False):
                 index = len(session.logs)
                 log = (runtime / f"replace-{index}.log").open("w+")
                 result = (runtime / f"replace-{index}.json").open("w+")
                 session.logs.extend([log, result])
                 path = runtime / f"control-{index}.sock"
-                child = subprocess.Popen([str(binary), str(videos[0]), str(candidate or videos[1]), "--output", output,
-                                          "--control-socket", str(path), "--gl-api", args.gl_api, *extra],
-                                         env=session.env, stdout=result, stderr=log, text=True)
+                owner, endpoint = socket.socketpair() if stream else (None, None)
+                control_args = ["--control-stdin"] if stream else ["--control-socket", str(path)]
+                try:
+                    child = subprocess.Popen([str(binary), str(videos[0]), str(candidate or videos[1]), "--output", output,
+                                              *control_args, "--gl-api", args.gl_api, *extra],
+                                             env=session.env, stdin=endpoint, stdout=result, stderr=log, text=True)
+                except Exception:
+                    if owner: owner.close()
+                    raise
+                finally:
+                    if endpoint: endpoint.close()
                 session.workers.append(child)
-                results[child.pid], controls[child.pid] = result, path
+                results[child.pid], controls[child.pid] = result, owner if stream else path
                 return child, log
 
             def finish(child):
@@ -90,6 +113,9 @@ def main():
                 return session.text(results[child.pid])
 
             def command(child, message):
+                if isinstance(controls[child.pid], socket.socket):
+                    controls[child.pid].sendall(message)
+                    return
                 with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as control:
                     control.sendto(message, str(controls[child.pid]))
 
@@ -371,6 +397,64 @@ def main():
                 assert [start["source"] for start in next_failure["clock_starts"]] == [0, 1] and next_failure["witness_button_events"] == 4, next_failure
                 wait_for(empty, "failed next candidate keeps committed video")
 
+            controller_cpu = []
+            for stage in ["prepared", "out_of_order", "published", "finalized", "next_prepared", "malformed", "truncated", "overflow"]:
+                extra = ["--reprepare-after-finalize", str(videos[0])] if stage == "next_prepared" else []
+                orphan, log = spawn(extra=extra, stream=True)
+                session.expect_log(orphan, log, "Replacement candidate cached; previous video continues")
+                if stage not in ["prepared", "out_of_order"]:
+                    if stage == "published":
+                        command(orphan, b"pub")
+                        moving(orphan, 0)
+                        assert "Replacement candidate video presented" not in session.text(log), session.diagnostics()
+                        command(orphan, b"lish\n")
+                    else:
+                        command(orphan, b"publish\n")
+                    session.expect_log(orphan, log, "Replacement candidate video presented; pointer reached witness")
+                if stage in ["finalized", "next_prepared"]:
+                    command(orphan, b"finalize\n")
+                    session.expect_log(orphan, log, "Replacement finalized; previous source retired; candidate video continues")
+                    if stage == "next_prepared":
+                        session.expect_log(orphan, log, "Replacement next candidate cached; committed video continues")
+                if stage == "out_of_order":
+                    command(orphan, b"rollback\n")
+                elif stage == "overflow":
+                    command(orphan, b"x" * 80)
+                elif stage == "malformed":
+                    command(orphan, b"unknown\n")
+                else:
+                    if stage == "truncated": command(orphan, b"roll")
+                    controls[orphan.pid].close()
+                session.expect_log(orphan, log, "Replacement controller lost; preserving retained assignment")
+                if stage in ["prepared", "out_of_order"]:
+                    session.expect_log(orphan, log, "Replacement candidate removed; previous video retained")
+                elif stage == "next_prepared":
+                    session.expect_log(orphan, log, "Replacement re-prepared candidate removed; committed video continues")
+                elif stage not in ["finalized"]:
+                    session.expect_log(orphan, log, "Replacement previous video restored; pointer reached witness")
+                before = cpu_seconds(orphan.pid)
+                moving(orphan, 1 if stage in ["finalized", "next_prepared"] else 0)
+                controller_cpu.append(cpu_seconds(orphan.pid) - before)
+                assert controller_cpu[-1] < .5, ("closed controller caused a busy loop", stage, controller_cpu[-1])
+                orphan.send_signal(signal.SIGINT)
+                orphan_report = json.loads(finish(orphan))
+                assert orphan.returncode == 0 and orphan_report["status"] == "passed", session.diagnostics()
+                validate(orphan_report, surfaces=3 if stage == "next_prepared" else 2)
+                assert orphan_report["controller_failure"] and orphan_report["control_transport"] == "inherited_unix_stream", orphan_report
+                if stage in ["finalized", "next_prepared"]:
+                    assert orphan_report["finalized"] and not orphan_report["previous_restored"] and not orphan_report["automatic_rollback"], orphan_report
+                    assert [start["source"] for start in orphan_report["clock_starts"]] == [0, 1] and orphan_report["witness_button_events"] == 4, orphan_report
+                    if stage == "next_prepared": assert orphan_report["reprepared"]["failure"] and not orphan_report["reprepared"]["aborted"], orphan_report
+                elif stage in ["prepared", "out_of_order"]:
+                    assert not orphan_report["candidate"]["playback_started"] and not orphan_report["candidate_presented"], orphan_report
+                    assert [start["source"] for start in orphan_report["clock_starts"]] == [0] and orphan_report["witness_button_events"] == 2, orphan_report
+                else:
+                    assert orphan_report["automatic_rollback"] and orphan_report["previous_restored"], orphan_report
+                    assert [start["source"] for start in orphan_report["clock_starts"]] == [0, 1, 0] and orphan_report["witness_button_events"] == 6, orphan_report
+                    assert next(frame for frame in orphan_report["frames"] if frame["kind"] == "rollback")["pts_ns"] == orphan_report["rollback_pts_ns"], orphan_report
+                assert session.capture(other).tobytes() == other_baseline, "controller loss changed other output"
+                wait_for(empty, "controller-loss cleanup")
+
             for message, error in [(b"rollback\n", "invalid replacement command order"),
                                    (b"finalize\n", "invalid replacement command order"),
                                    (b"unknown\n", "invalid nested diagnostic command"),
@@ -423,6 +507,8 @@ def main():
             print(session.diagnostics())
             raise
         finally:
+            for endpoint in controls.values():
+                if isinstance(endpoint, socket.socket): endpoint.close()
             session.close()
     print(json.dumps({"video_replacement":"passed", "gl_api":args.gl_api, "nvidia":args.nvidia,
                       "gl":report["gl"], "visible_markers":[sorted(old_seen),sorted(candidate_seen),sorted(restored_seen)],
@@ -432,6 +518,7 @@ def main():
                       "early_candidate_was_presented":early_report["candidate_first_frame_confirmed"],
                       "handled_candidate_discards":discarded_report["handled_candidate_discards"],
                       "reprepared_lifecycle":renewal["egl_lifecycle"],
+                      "controller_loss_max_cpu_seconds":max(controller_cpu),
                       "checks":["distinct old/new sources", "old video moves while candidate paused", "presentation-gated clocks",
                                 "sampled publication/rollback pixels", "rollback retained PTS", "video moves after restoration",
                                 "abort and malformed candidate retain moving previous video", "real input", "unchanged second output",
@@ -441,6 +528,7 @@ def main():
                                 "finalize retires previous source while candidate keeps moving and looping",
                                 "recreate retired branch and abort next hidden candidate without replacing root/context",
                                 "malformed next candidate retains moving committed video",
+                                "controller EOF/malformed input preserves or restores the retained assignment without a busy loop",
                                 "input negative control", "SIGKILL", "compositor loss"]}))
 
 

@@ -145,12 +145,30 @@ cleanup has three creations/two destructions without terminating that owner. Mis
 and malformed next candidates also retain moving committed video. This qualifies a
 second preparation and retirement, not publication/commit of arbitrary repeated sources.
 
+`--control-stdin` accepts an inherited, connected Unix stream from the same effective
+user instead of the legacy diagnostic datagram socket. Commands remain newline framed,
+with a bounded partial-command buffer; fragmented commands are accepted. EOF, truncated,
+malformed, oversized or out-of-order commands close the controller connection. Before
+finalization, the worker retires a hidden candidate or restores the retained previous
+video and waits for its real presentation before resuming its clock. After finalization,
+it keeps the committed source; if a next candidate is pending, only that candidate is
+retired. The closed descriptor is removed from polling to avoid an EOF busy loop.
+
+Private Mesa desktop GL/GLES and NVIDIA desktop GL tests cover controller loss while
+prepared, published, finalized and preparing the next candidate, along with fragmented,
+malformed, truncated, oversized and out-of-order commands. They check continued moving
+pixels, presentation-gated clock order, retained rollback PTS, input, resource retirement,
+unchanged second output and low idle CPU after EOF. Non-socket and datagram stdin are
+rejected before connecting to Wayland. This inherited capability is private diagnostic
+control, not versioned manager IPC or an operating-system content sandbox. Recovery
+requires the event loop and native APIs to remain responsive; blocked GPU/decoder calls
+and driver hangs still need separate supervision and qualification.
+
 This is a bounded private diagnostic with fixed published geometry, logical-size SDR
 buffers and one transaction. It is not general worker IPC, production Apply or a content
 sandbox. Injected media-bus errors after confirmed candidate readiness now have automatic
 rollback coverage, including an error before candidate readiness is accepted. Real
-post-publication decoder failures, lost presentation feedback,
-control-connection loss and rollback
+post-publication decoder failures, lost presentation feedback and rollback
 failure still need qualification. A decoder/worker process crash loses both in-process
 sources; manager restart/static fallback remains necessary. Repeated publication/commit,
 replacing a committed candidate, device loss, dynamic output geometry, multi-output visual
