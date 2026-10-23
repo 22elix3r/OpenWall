@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod gpu;
 #[cfg(target_os = "macos")]
+mod macos_display;
+#[cfg(target_os = "macos")]
 mod macos_video;
 mod preview;
 #[cfg(all(target_os = "linux", feature = "video"))]
@@ -24,7 +26,7 @@ struct Cli {
 enum Command {
     /// Show the desktop capabilities actually available in this session.
     Doctor,
-    /// List connected Wayland outputs and layer-shell availability.
+    /// List connected displays and identifiers accepted by --output.
     Outputs,
     /// Inspect the supported scene subset without executing wallpaper code.
     Inspect { path: PathBuf },
@@ -101,7 +103,16 @@ fn execute() -> Result<()> {
                     )?
                 );
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "backend":"appkit", "outputs":macos_display::outputs()?,
+                    "selector_lifetime":"current display configuration; not a persistent hardware identity",
+                    "hardware_qualification":"pending"
+                }))?
+            );
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             anyhow::bail!("display enumeration is not implemented on this platform yet");
         }
         Command::Inspect { path } => {

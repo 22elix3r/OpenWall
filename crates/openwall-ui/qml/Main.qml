@@ -97,11 +97,20 @@ ApplicationWindow {
                         ColumnLayout {
                             spacing: 6
                             Label { text: "DISPLAY"; color: "#8b98b2"; font.pixelSize: 10; font.letterSpacing: 1.4 }
-                            ComboBox { id: displays; model: JSON.parse(backend.outputsJson); Layout.preferredWidth: 200; Accessible.name: "Display to use for wallpaper" }
+                            ComboBox {
+                                id: displays
+                                model: JSON.parse(backend.outputsJson)
+                                textRole: "label"; valueRole: "selector"
+                                Layout.preferredWidth: 260
+                                hoverEnabled: true
+                                ToolTip.visible: hovered
+                                ToolTip.text: currentText
+                                Accessible.name: "Display to use for wallpaper"
+                            }
                         }
                         Item { Layout.fillWidth: true }
                         Button { text: "Preview"; enabled: !backend.busy; onClicked: backend.start(false, ""); Accessible.name: "Open live wallpaper preview" }
-                        Button { text: backend.active ? "Stop wallpaper" : "Set wallpaper"; highlighted: !backend.active; enabled: !backend.busy; onClicked: backend.active ? backend.stop() : backend.start(true, displays.currentIndex > 0 ? displays.currentText : "") }
+                        Button { text: backend.active ? "Stop wallpaper" : "Set wallpaper"; highlighted: !backend.active; enabled: !backend.busy; onClicked: backend.active ? backend.stop() : backend.start(true, displays.currentValue || "") }
                     }
                 }
             }

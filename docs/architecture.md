@@ -78,6 +78,15 @@ loads downloaded QML. Worker logs are continuously drained and capped at 16 KiB 
 prevent pipe backpressure. Generation checks prevent stale inspection results replacing
 a newer selection. The current GUI owns its workers and stops them on exit.
 
+macOS display discovery runs a separate windowless winit/AppKit main-thread event loop.
+Enumeration reports native display identifiers and physical geometry; Apply resolves
+the selected identifier against the current monitor list. Ambiguous human-readable
+names fail rather than selecting the first matching monitor. The GUI keeps labels and
+selection values separate, preserving Wayland output names as Linux selectors. Native
+macOS IDs are configuration-local hints and must not become durable assignment keys;
+the manager still needs a qualified persistent hardware identity policy. Enumeration,
+multi-display placement and Spaces behavior remain unqualified on real macOS hardware.
+
 ## Next boundary: manager
 
 M1 will replace GUI-owned playback with a background Rust manager. It will own SQLite

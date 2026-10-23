@@ -118,10 +118,14 @@ impl Preview {
             .with_visible(false);
         if self.desktop {
             let monitor = if let Some(name) = &self.output {
-                event_loop
+                #[cfg(target_os = "macos")]
+                let selected = crate::macos_display::select(event_loop, name)?;
+                #[cfg(not(target_os = "macos"))]
+                let selected = event_loop
                     .available_monitors()
                     .find(|m| m.name().as_deref() == Some(name.as_str()))
-                    .with_context(|| format!("display not found: {name}"))?
+                    .with_context(|| format!("display not found: {name}"))?;
+                selected
             } else {
                 event_loop
                     .primary_monitor()
