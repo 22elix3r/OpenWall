@@ -107,6 +107,11 @@ jobs:
         env:
           OPENWALL_TEST_GPU: '1'
         run: cargo test --locked -p openwall --test cli gpu_ -- --nocapture
+      - name: Shared scene textures across painters
+        if: runner.os == 'Linux'
+        run: |
+          cargo build -p openwall --example shared_scene_textures_probe --locked
+          /usr/bin/python3 scripts/test_shared_scene_textures.py --software
       - name: Headless Wayland lifecycle and video
         if: runner.os == 'Linux'
         run: |

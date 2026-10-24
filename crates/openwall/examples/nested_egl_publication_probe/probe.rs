@@ -177,6 +177,9 @@ pub fn run() -> Result<()> {
                     eprintln!("Nested candidate aborted; previous root retained");
                 }
                 Command::Finalize => anyhow::bail!("invalid nested command order"),
+                Command::SetPause { reason, paused } => anyhow::bail!(
+                    "invalid nested command order: video pause policy {reason:?}={paused}"
+                ),
             }
         }
         if stopped.load(Ordering::Relaxed) {

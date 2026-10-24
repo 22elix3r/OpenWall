@@ -4,4 +4,5 @@
 #[cfg(all(target_os = "linux", feature = "native-egl"))]
 pub mod native_egl;
 
+pub mod playback;
 pub mod presentation;
