@@ -17,6 +17,18 @@ flowchart LR
 original sample loading and reports. It has no Qt, GPU or desktop dependency. Package
 data is read without extraction. Resource paths stay inside the selected wallpaper root.
 PNG/JPEG/WebP and static raw TEX decoding is bounded; embedded-media TEX is rejected.
+Packed asset byte views share one owned package buffer instead of copying each entry.
+Aliased/overlapping offsets therefore cannot multiply payload storage by entry count.
+The source buffer moves into an `Arc<Vec<u8>>` without a second full-buffer copy; each
+view contains only a shared owner and validated range. The 512 MiB package, 64 MiB
+per-entry and 16,384-entry limits still apply. A retained view can keep the whole package
+snapshot alive until its last owner releases it; disk replacement does not mutate an
+existing snapshot. Entries are not decompressed or executed by indexing them. Path
+length is checked before formatting diagnostics, and byte-view Debug output reports
+length rather than dumping payload. Unsupported animated/video TEX flags are rejected
+before the upstream parser can construct animation metadata. These guards reduce
+allocation amplification; they are not an OS sandbox or complete package/TEX fuzzing.
+
 
 `openwall` is the actual GPU/media worker and diagnostic CLI. A scene's textures are
 uploaded to the GPU and rendered only on presentation/configuration changes. Linux
@@ -87,6 +99,25 @@ OUT_DIR before invoking the builder, matching fresh-build behavior. The builder 
 regenerates/exports current metadata for tooling afterward. This avoids stale method
 indices without deleting Cargo caches or disabling QML compilation globally; revisit
 this workaround when the upstream generation order changes.
+
+Static scene image uploads are shared by painters belonging to the same `Gpu` device.
+Each unique decoded image identity has one texture/binding group across its layers and
+monitor painters; each painter still owns its vertex geometry and format-specific
+pipeline. An explicit device-owned image layout permits the same bindings in RGBA/BGRA
+pipelines. The cache keeps weak references to uploaded resources and prunes expired
+entries when constructing a painter. The last painter releases application ownership
+of its images; re-creating it uploads again. GPU resources keep only weak CPU image
+identity reservations, preventing address reuse from aliasing another image without
+retaining decoded pixel vectors. The cache is neither global nor shared across devices,
+processes, graphics APIs or different decoded image identities with equal content.
+
+A windowless conformance probe checks upload counts, actual pixels across target formats,
+independent geometry, painter/source retirement, re-creation and device isolation. It
+passes software Vulkan, AMD integrated Vulkan and NVIDIA Vulkan locally. Its byte counts
+measure live RGBA payload under application ownership, not physical driver allocations
+or an energy benchmark. Readback remains confined to offline rendering/conformance;
+live desktop presentation does not use the readback helper. CI will compile the Metal path;
+physical macOS resource/presentation qualification remains pending.
 
 `openwall-ui` exposes Rust objects to QML through CXX-Qt. Content inspection runs in a
 separate process on a background thread; the GUI never evaluates wallpaper scripts or
@@ -178,6 +209,17 @@ retained. These are integration requirements, not implemented IPC/manager behavi
 The [two-source diagnostic](video-replacement-probe.md) currently establishes explicit
 publication/rollback and pre-publication media failure handling in one process, with
 injected post-publication media-error rollback and explicit finalization retirement.
+Playback policy reasons are combined independently in `playback::Pauses`. The private
+video replacement control currently exercises user and power-policy reasons. Clearing
+one producer's reason is idempotent and cannot resume content while another remains.
+Policy state does not confer presentation authority: only the active, confirmed stable
+source may receive a PLAYING request. Publication/restoration may present a static frame
+while policy is paused, including after controller loss; retained and hidden sources
+stay in PAUSED. Rewind waits until playback is permitted again. Buffered complete control
+commands are drained before another wait, including when no media events can wake the
+loop. Actual platform power/lock/visibility producers and durable policy ownership still
+belong to the manager integration work.
+
 Per-registration presentation receipts retain terminal bookkeeping independently of
 bounded diagnostic histories. The video replacement path uses exact receipts to gate
 clocks and identify an active candidate discard; a full history cannot suppress a later

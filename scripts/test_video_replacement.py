@@ -143,6 +143,20 @@ def main():
                 assert len(seen) >= 2, ("visible video stopped", index, seen, session.diagnostics())
                 return seen
 
+            def still(child, index):
+                # PAUSED may deliver one last asynchronous preroll sample.
+                time.sleep(.2)
+                before = cpu_seconds(child.pid)
+                seen = set()
+                until = time.monotonic() + 1.2
+                while time.monotonic() < until:
+                    source, identity = pixels(child, [index])
+                    assert source == index
+                    seen.add(identity)
+                    time.sleep(.025)
+                assert len(seen) == 1, ("paused video moved", index, seen, session.diagnostics())
+                assert cpu_seconds(child.pid) - before < .5, "paused source busy loop"
+
             def empty():
                 image = session.capture(output)
                 return image is not None and all(max(abs(a-b) for a,b in zip(image.getpixel((int(image.width*x), int(image.height*y))), baseline)) <= 2
@@ -172,6 +186,7 @@ def main():
                 else:
                     assert all(start["presented_frame_id"] in presented for start in report["clock_starts"]), report
                 assert report["previous"]["playback_started"], report
+                assert report["clock_start_count"] == len(report["clock_starts"]), report
 
             child, log = spawn()
             session.expect_log(child, log, "Replacement candidate cached; previous video continues")
@@ -434,6 +449,59 @@ def main():
                 assert [start["source"] for start in next_failure["clock_starts"]] == [0, 1] and next_failure["witness_button_events"] == 4, next_failure
                 wait_for(empty, "failed next candidate keeps committed video")
 
+            initially_paused, log = spawn(stream=True)
+            command(initially_paused, b"pause user\npause power\nresume user\n")
+            session.expect_log(initially_paused, log, "Replacement candidate cached; previous video continues")
+            session.expect_log(initially_paused, log, "Replacement pause policy changed: [PowerPolicy]")
+            still(initially_paused, 0)
+            # Both fit in one read. The first is a no-op; the second must be
+            # consumed even while all pipelines and compositor feedback are idle.
+            command(initially_paused, b"resume user\nresume power\n")
+            session.expect_log(initially_paused, log, "Replacement playback resumed: source=0")
+            moving(initially_paused, 0)
+            command(initially_paused, b"abort\n")
+            session.expect_log(initially_paused, log, "Replacement candidate removed; previous video retained")
+            initially_paused.send_signal(signal.SIGINT)
+            initial_pause_report = json.loads(finish(initially_paused))
+            assert initially_paused.returncode == 0 and initial_pause_report["status"] == "passed", session.diagnostics()
+            validate(initial_pause_report)
+            assert [start["source"] for start in initial_pause_report["clock_starts"]] == [0], initial_pause_report
+            assert initial_pause_report["pause_policy"]["active"] == [] and initial_pause_report["pause_policy"]["event_count"] == 4, initial_pause_report
+            wait_for(empty, "initial combined pause cleanup")
+
+            for disconnect in [False, True]:
+                paused_worker, log = spawn(stream=True)
+                session.expect_log(paused_worker, log, "Replacement candidate cached; previous video continues")
+                command(paused_worker, b"pause user\n")
+                session.expect_log(paused_worker, log, "Replacement playback paused: source=0")
+                still(paused_worker, 0)
+                command(paused_worker, b"publish\n")
+                session.expect_log(paused_worker, log, "Replacement candidate video presented; pointer reached witness")
+                still(paused_worker, 1)
+                if disconnect:
+                    controls[paused_worker.pid].close()
+                else:
+                    command(paused_worker, b"rollback\n")
+                session.expect_log(paused_worker, log, "Replacement previous video restored; pointer reached witness")
+                still(paused_worker, 0)
+                if not disconnect:
+                    command(paused_worker, b"pause power\nresume user\n")
+                    session.expect_log(paused_worker, log, "Replacement pause policy changed: [PowerPolicy]")
+                    still(paused_worker, 0)
+                    command(paused_worker, b"resume power\n")
+                    moving(paused_worker, 0)
+                paused_worker.send_signal(signal.SIGINT)
+                paused_report = json.loads(finish(paused_worker))
+                assert paused_worker.returncode == 0 and paused_report["status"] == "passed", session.diagnostics()
+                validate(paused_report)
+                assert paused_report["candidate_first_frame_confirmed"] and not paused_report["candidate"]["playback_started"], paused_report
+                assert paused_report["previous_restored"] and paused_report["witness_button_events"] == 6, paused_report
+                assert [start["source"] for start in paused_report["clock_starts"]] == ([0] if disconnect else [0, 0]), paused_report
+                assert paused_report["pause_policy"]["active"] == (["user"] if disconnect else []), paused_report
+                assert bool(paused_report["controller_failure"]) == disconnect and paused_report["automatic_rollback"] == disconnect, paused_report
+                assert session.capture(other).tobytes() == other_baseline, "combined pause changed other output"
+                wait_for(empty, "paused transaction cleanup")
+
             controller_cpu = []
             for stage in ["prepared", "out_of_order", "published", "finalized", "next_prepared", "malformed", "truncated", "overflow"]:
                 extra = ["--reprepare-after-finalize", str(videos[0])] if stage == "next_prepared" else []
@@ -567,6 +635,7 @@ def main():
                                 "malformed next candidate retains moving committed video",
                                 "controller EOF/malformed input preserves or restores the retained assignment without a busy loop",
                                 "presentation receipts gate clocks when diagnostic history is full",
+                                "combined user/power pauses, coalesced idle control, paused publication/rollback/EOF",
                                 "input negative control", "SIGKILL", "compositor loss"]}))
 
 

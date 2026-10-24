@@ -3,6 +3,7 @@ use std::{
     collections::BTreeMap,
     fs::File,
     io::Read,
+    ops::{Deref, Range},
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -14,11 +15,47 @@ pub const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ENTRIES: usize = 16_384;
 
+/// Immutable bytes owned by a loose file or a shared package snapshot. A packed
+/// view keeps that package alive, without copying an entry or exposing mutation.
+#[derive(Clone)]
+pub struct AssetBytes {
+    data: Arc<Vec<u8>>,
+    range: Range<usize>,
+}
+
+impl AssetBytes {
+    fn file(bytes: Vec<u8>) -> Self {
+        let end = bytes.len();
+        Self {
+            data: Arc::new(bytes),
+            range: 0..end,
+        }
+    }
+}
+impl Deref for AssetBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.data[self.range.clone()]
+    }
+}
+impl AsRef<[u8]> for AssetBytes {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+impl std::fmt::Debug for AssetBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AssetBytes")
+            .field("length", &self.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Package data is immutable and never extracted onto the host filesystem.
 #[derive(Clone, Debug)]
 pub struct Assets {
     root: PathBuf,
-    packed: BTreeMap<String, Arc<[u8]>>,
+    packed: BTreeMap<String, AssetBytes>,
 }
 
 impl Assets {
@@ -27,7 +64,7 @@ impl Assets {
         let package = assets.root.join("scene.pkg");
         if package.exists() {
             let bytes = assets.read_file("scene.pkg", MAX_PACKAGE_BYTES)?;
-            assets.load_package(&bytes)?;
+            assets.load_package(bytes)?;
         }
         Ok(assets)
     }
@@ -45,7 +82,7 @@ impl Assets {
         })
     }
 
-    fn load_package(&mut self, bytes: &[u8]) -> Result<()> {
+    fn load_package(&mut self, bytes: Vec<u8>) -> Result<()> {
         // Check the entry count before handing untrusted lengths to the upstream parser.
         ensure!(bytes.len() >= 8, "truncated package header");
         let magic_len = u32::from_le_bytes(bytes[..4].try_into()?) as usize;
@@ -58,7 +95,11 @@ impl Assets {
             .context("truncated package entry count")?;
         let count = u32::from_le_bytes(raw_count.try_into()?) as usize;
         ensure!(count <= MAX_ENTRIES, "package has too many entries");
-        let package = Pkg::parse(bytes).context("invalid Wallpaper Engine package")?;
+        // Move the buffer into a shared owner; do not copy it into an Arc slice.
+        // Entry offsets may overlap, so a package-size limit cannot bound the sum
+        // of independently copied entries.
+        let bytes = Arc::new(bytes);
+        let package = Pkg::parse(&bytes).context("invalid Wallpaper Engine package")?;
         for entry in package.entries() {
             let name = entry
                 .name_str()
@@ -72,18 +113,35 @@ impl Assets {
                 !self.packed.contains_key(name),
                 "duplicate package asset: {name}"
             );
-            self.packed
-                .insert(name.to_owned(), Arc::from(package.read(entry)?));
+            let payload = package.read(entry)?;
+            let start = package
+                .base_offset()
+                .checked_add(entry.offset as usize)
+                .context("package asset offset overflow")?;
+            let end = start
+                .checked_add(payload.len())
+                .context("package asset length overflow")?;
+            ensure!(
+                bytes.get(start..end).is_some(),
+                "invalid package asset range"
+            );
+            self.packed.insert(
+                name.to_owned(),
+                AssetBytes {
+                    data: bytes.clone(),
+                    range: start..end,
+                },
+            );
         }
         Ok(())
     }
 
-    pub fn read(&self, name: &str) -> Result<Arc<[u8]>> {
+    pub fn read(&self, name: &str) -> Result<AssetBytes> {
         validate_name(name)?;
         if let Some(data) = self.packed.get(name) {
             return Ok(data.clone());
         }
-        self.read_file(name, MAX_ASSET_BYTES).map(Arc::from)
+        self.read_file(name, MAX_ASSET_BYTES).map(AssetBytes::file)
     }
 
     fn read_file(&self, name: &str, limit: u64) -> Result<Vec<u8>> {
@@ -134,6 +192,12 @@ impl Assets {
             ensure!(bytes.len() >= 63, "truncated TEX header");
             let images = u32::from_le_bytes(bytes[55..59].try_into()?);
             ensure!(images == 1, "only single-image static TEX is supported");
+            let flags =
+                kirie_formats::tex::TextureFlags(u32::from_le_bytes(bytes[22..26].try_into()?));
+            ensure!(
+                !flags.is_gif() && !flags.video(),
+                "animated and video TEX are not supported yet"
+            );
             let mip_offset = match &bytes[46..55] {
                 b"TEXB0001\0" | b"TEXB0002\0" => 59,
                 b"TEXB0003\0" => 63,
@@ -203,10 +267,10 @@ impl Assets {
 }
 
 pub fn validate_name(name: &str) -> Result<()> {
+    ensure!(name.len() <= 1024, "asset path too long");
     if name.is_empty() || name.contains(['\\', '\0', ':']) || name.starts_with('/') {
         bail!("invalid asset path: {name:?}");
     }
-    ensure!(name.len() <= 1024, "asset path too long");
     ensure!(
         name.split('/')
             .all(|part| !part.is_empty() && part != "." && part != ".."),
@@ -311,5 +375,109 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink("/etc/passwd", root.path().join("escape")).unwrap();
         assert!(Assets::open(root.path()).unwrap().read("escape").is_err());
+    }
+
+    fn package(entries: &[(&str, u32, u32)], payload: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::from(8u32.to_le_bytes());
+        bytes.extend_from_slice(b"PKGV0001");
+        bytes.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        for &(name, offset, length) in entries {
+            bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(name.as_bytes());
+            bytes.extend_from_slice(&offset.to_le_bytes());
+            bytes.extend_from_slice(&length.to_le_bytes());
+        }
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    #[test]
+    fn overlapping_entries_share_one_immutable_package_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("scene.pkg");
+        let names = (0..512)
+            .map(|index| format!("alias-{index}"))
+            .collect::<Vec<_>>();
+        let entries = names
+            .iter()
+            .map(|name| (name.as_str(), 0, 64 * 1024))
+            .collect::<Vec<_>>();
+        let bytes = package(&entries, &vec![0x5a; 64 * 1024]);
+        let size = bytes.len();
+        std::fs::write(&path, bytes).unwrap();
+        let assets = Assets::open(root.path()).unwrap();
+        let clone = assets.clone();
+        let first = assets.read(&names[0]).unwrap();
+        for name in &names {
+            let view = clone.read(name).unwrap();
+            assert!(
+                Arc::ptr_eq(&first.data, &view.data),
+                "package payload copied for {name}"
+            );
+            assert_eq!(first.as_ptr(), view.as_ptr());
+            assert_eq!(view.len(), 64 * 1024);
+        }
+        assert_eq!(
+            first.data.len(),
+            size,
+            "backing storage grew with alias count"
+        );
+        std::fs::write(&path, b"replaced on disk").unwrap();
+        drop(assets);
+        drop(clone);
+        assert_eq!(first.as_ref(), &[0x5a; 64 * 1024]);
+        assert!(
+            format!("{first:?}").len() < 100,
+            "debug output dumped package bytes"
+        );
+    }
+
+    #[test]
+    fn partial_overlap_and_out_of_bounds_ranges_are_checked() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("scene.pkg");
+        std::fs::write(&path, package(&[("a", 0, 4), ("b", 2, 4)], b"abcdef")).unwrap();
+        let assets = Assets::open(root.path()).unwrap();
+        let a = assets.read("a").unwrap();
+        let b = assets.read("b").unwrap();
+        assert_eq!(a.as_ref(), b"abcd");
+        assert_eq!(b.as_ref(), b"cdef");
+        assert_eq!(a.as_ptr().wrapping_add(2), b.as_ptr());
+        for entries in [
+            vec![("a", u32::MAX, 1)],
+            vec![("a", 0, u32::MAX)],
+            vec![("a", 5, 2)],
+            vec![("same", 0, 1), ("same", 1, 1)],
+        ] {
+            std::fs::write(&path, package(&entries, b"abcdef")).unwrap();
+            assert!(Assets::open(root.path()).is_err(), "accepted {entries:?}");
+        }
+    }
+
+    #[test]
+    fn oversized_path_errors_are_bounded_before_formatting() {
+        let name = format!("/{}", "x".repeat(64 * 1024));
+        let error = validate_name(&name).unwrap_err().to_string();
+        assert_eq!(error, "asset path too long");
+    }
+
+    #[test]
+    fn unsupported_animated_tex_is_rejected_before_animation_parsing() {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/checker.tex");
+        for flag in [
+            kirie_formats::tex::TextureFlags::IS_GIF,
+            kirie_formats::tex::TextureFlags::VIDEO,
+        ] {
+            let mut bytes = std::fs::read(&fixture).unwrap();
+            bytes[22..26].copy_from_slice(&flag.to_le_bytes());
+            std::fs::write(root.path().join("unsupported.tex"), bytes).unwrap();
+            let error = Assets::loose(root.path())
+                .unwrap()
+                .image("unsupported.tex")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("animated and video TEX"), "{error}");
+        }
     }
 }
