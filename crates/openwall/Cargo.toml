@@ -21,7 +21,7 @@ image.workspace = true
 clap = { version = "4", features = ["derive"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl"] }
 winit = "0.30"
-pollster = "0.4"
+pollster = "1.0"
 bytemuck = { version = "1", features = ["derive"] }
 ctrlc = "3"
 raw-window-handle = "0.6"
@@ -31,12 +31,12 @@ wayland-client = { version = "0.31", features = ["system"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 rustix = { version = "1", features = ["event", "fs", "time", "net", "process"] }
-gstreamer = { version = "0.24", optional = true }
-gstreamer-video = { version = "0.24", optional = true }
-libloading = { version = "0.8", optional = true }
-gstreamer-app = { version = "0.24", optional = true }
-gstreamer-gl = { version = "0.24", optional = true }
-gstreamer-gl-egl = { version = "0.24", optional = true, features = ["v1_24"] }
+gstreamer = { version = "0.25", optional = true }
+gstreamer-video = { version = "0.25", optional = true }
+libloading = { version = "0.9", optional = true }
+gstreamer-app = { version = "0.25", optional = true }
+gstreamer-gl = { version = "0.25", optional = true }
+gstreamer-gl-egl = { version = "0.25", optional = true, features = ["v1_24"] }
 khronos-egl = { version = "6", optional = true, features = ["dynamic"] }
 glow = { version = "0.18", optional = true }
 wayland-egl = { version = "0.32.11", optional = true }
