@@ -19,4 +19,4 @@ tempfile = "3"
 rustix = { version = "1", features = ["event", "fs", "process"] }
 
 [build-dependencies]
-cxx-qt-build = "0.8"
+cxx-qt-build = "0.10"
